@@ -10,7 +10,10 @@ import numpy as np
 import io
 from typing import Optional, List
 from .detector import PageInfo
-from config import TESSERACT_LANG
+try:
+    from backend.config import TESSERACT_LANG
+except ImportError:
+    from config import TESSERACT_LANG
 
 
 # Tesseract config: OSD + Greek, PSM 3 = fully automatic page segmentation

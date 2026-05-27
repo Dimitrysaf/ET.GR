@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FEK Processor</title>
+</head>
+<body>
+  <h1>FEK OCR + AI Pipeline</h1>
+
+  <form id="uploadForm">
+    <label for="files">PDF files:</label>
+    <input id="files" name="files" type="file" accept="application/pdf" multiple required>
+    <button type="submit">Start Processing</button>
+    <button type="button" id="purgeAiBtn">Stop & Purge AI</button>
+  </form>
+
+  <h2>Progress</h2>
+  <pre id="progress"></pre>
+
+  <h2>Raw Logs</h2>
+  <pre id="rawLogs"></pre>
+
+  <h2>Live AI Output Preview</h2>
+  <pre id="preview"></pre>
+
+  <h2>AI Execution</h2>
+  <pre id="aiLog"></pre>
+
+  <h2>Errors</h2>
+  <pre id="errors"></pre>
+
+  <script>
+    const progressEl = document.getElementById('progress');
+    const rawLogsEl = document.getElementById('rawLogs');
+    const previewEl = document.getElementById('preview');
+    const aiLogEl = document.getElementById('aiLog');
+    const errorsEl = document.getElementById('errors');
+
+    function log(el, text) {
+      el.textContent += text + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+
+    ws.onopen = () => log(progressEl, '[ws] connected');
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        let line = `[${msg.stage}] ${msg.message}`;
+        const ts = msg.ts ? msg.ts : '-';
+        if (msg.stage === 'log') {
+          const lvl = msg.level || 'INFO';
+          const src = msg.source || 'app';
+          const rawLine = `[${ts}] [${lvl}] [${src}] ${msg.message}`;
+          log(rawLogsEl, rawLine);
+          if (msg.traceback) {
+            log(rawLogsEl, msg.traceback);
+          }
+        }
+        if (msg.stage === 'ai') {
+          const mode = msg.ai_mode ? ` mode=${msg.ai_mode}` : '';
+          const model = msg.model ? ` model=${msg.model}` : '';
+          const err = msg.llm_error ? ` error=${msg.llm_error}` : '';
+          line += mode + model + err;
+        }
+        if (msg.stage === 'ai_start') {
+          line += ` model=${msg.model || '-'} ram_gb=${msg.free_ram_gb || '-'} chars=${msg.raw_chars || '-'}`;
+          if (msg.model_reason) line += ` reason=${msg.model_reason}`;
+          log(aiLogEl, line);
+        }
+        if (msg.stage === 'ai') {
+          log(aiLogEl, line);
+        }
+        if (msg.stage === 'error') {
+          log(errorsEl, line + (msg.error ? ` :: ${msg.error}` : ''));
+        } else {
+          log(progressEl, line);
+        }
+        if (msg.ai_preview) {
+          previewEl.textContent = msg.ai_preview;
+        }
+      } catch (e) {
+        log(errorsEl, '[parse] ' + String(e));
+      }
+    };
+    ws.onerror = () => log(errorsEl, '[ws] error');
+    ws.onclose = () => log(progressEl, '[ws] closed');
+
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      progressEl.textContent = '';
+      rawLogsEl.textContent = '';
+      previewEl.textContent = '';
+      aiLogEl.textContent = '';
+      errorsEl.textContent = '';
+
+      const files = document.getElementById('files').files;
+      const form = new FormData();
+      for (const file of files) form.append('files', file);
+
+      log(progressEl, 'Uploading and processing...');
+
+      try {
+        const res = await fetch('/process', { method: 'POST', body: form });
+        const data = await res.json();
+        log(progressEl, '[result] ' + JSON.stringify(data, null, 2));
+      } catch (err) {
+        log(errorsEl, '[request] ' + String(err));
+      }
+    });
+
+    document.getElementById('purgeAiBtn').addEventListener('click', async () => {
+      const ok = window.confirm('This will stop Ollama and delete all local AI models. Continue?');
+      if (!ok) return;
+      log(progressEl, 'Running AI purge...');
+      try {
+        const res = await fetch('/ai/purge', { method: 'POST' });
+        const data = await res.json();
+        log(progressEl, '[ai_purge_result] ' + JSON.stringify(data, null, 2));
+      } catch (err) {
+        log(errorsEl, '[ai_purge_request] ' + String(err));
+      }
+    });
+
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send('ping');
+      }
+    }, 10000);
+  </script>
+</body>
+</html>

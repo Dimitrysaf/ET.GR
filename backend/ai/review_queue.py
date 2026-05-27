@@ -6,7 +6,10 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
-from config import REVIEW_DIR
+try:
+    from backend.config import REVIEW_DIR
+except ImportError:
+    from config import REVIEW_DIR
 
 
 def ensure_review_dir() -> None:

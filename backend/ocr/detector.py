@@ -17,10 +17,16 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-from config import (
-    MIN_TEXT_CONFIDENCE, MIN_CHARS_PER_PAGE,
-    COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND
-)
+try:
+    from backend.config import (
+        MIN_TEXT_CONFIDENCE, MIN_CHARS_PER_PAGE,
+        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND
+    )
+except ImportError:
+    from config import (
+        MIN_TEXT_CONFIDENCE, MIN_CHARS_PER_PAGE,
+        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND
+    )
 
 
 # ── Αποτέλεσμα ανάλυσης ──────────────────────────────────────────────────────

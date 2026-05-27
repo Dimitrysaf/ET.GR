@@ -30,6 +30,10 @@ OLLAMA_MODELS = [
 ]
 OLLAMA_BASE_URL  = "http://localhost:11434"
 OLLAMA_TIMEOUT   = 300   # seconds per AI call
+OLLAMA_AUTO_START = True
+OLLAMA_AUTO_PULL = True
+OLLAMA_NUM_CTX = 2048
+OLLAMA_MAX_OUTPUT_TOKENS = 700
 
 # Memory safety
 RAM_DANGER_GB    = 2.5   # pause processing if free RAM drops below this
