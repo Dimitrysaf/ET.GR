@@ -21,3 +21,7 @@ ollama>=0.2.1            # pinned to object-API era
 
 # System
 psutil>=5.9.0
+
+# Markitdown
+markitdown[all]>=0.1.6
+openai

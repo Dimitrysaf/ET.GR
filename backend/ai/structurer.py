@@ -487,7 +487,9 @@ def to_xml(data: Dict[str, Any]) -> str:
 
 
 def to_html(data: Dict[str, Any]) -> str:
-    lines = ["<!doctype html>", "<html><head><meta charset='utf-8'></head><body>"]
+    lines = ["<!doctype html>", "<html><head><meta charset='utf-8'>"]
+    lines.append("<style>.diff-added { color: #00703c; background-color: #d7f1e6; } .diff-removed { color: #d4351c; background-color: #f9d6d2; } .fek-diff { font-family: monospace; white-space: pre-wrap; background-color: #f3f2f1; padding: 10px; border: 1px solid #b1b4b6; }</style>")
+    lines.append("</head><body style='font-family: sans-serif;'>")
     lines.append(f"<h1>{_esc(data.get('title', 'Untitled'))}</h1>")
     lines.append(f"<p><strong>ID:</strong> {_esc(data.get('document_id', ''))}</p>")
     lines.append(
@@ -512,6 +514,19 @@ def to_html(data: Dict[str, Any]) -> str:
         lines.append("<h3>Signatures</h3>")
         for s in data["signatures"]:
             lines.append(f"<p>{_esc(s)}</p>")
+
+    if data.get("amendments"):
+        lines.append("<h2>Amendments (Diff View)</h2>")
+        for amend in data["amendments"]:
+            if amend.get("diff"):
+                lines.append(f"<h3>Change to {amend.get('target_law_id')}</h3>")
+                lines.append("<div class='fek-diff'>")
+                for line in amend["diff"].splitlines():
+                    cls = ""
+                    if line.startswith("+"): cls = "diff-added"
+                    elif line.startswith("-"): cls = "diff-removed"
+                    lines.append(f"<div class='{cls}'>{_esc(line)}</div>")
+                lines.append("</div>")
 
     lines.append("</body></html>")
     return "\n".join(lines)

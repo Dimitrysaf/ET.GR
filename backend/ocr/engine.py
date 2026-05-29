@@ -107,6 +107,19 @@ def _ocr_two_columns(page: fitz.Page, column_x: int, dpi: int) -> str:
     return "\n\n--- ΣΤΗΛΗ 2 ---\n\n".join(parts)
 
 
+def ocr_image(image_path: str) -> str:
+    """
+    OCR a single image file and return text.
+    """
+    try:
+        img = Image.open(image_path)
+        img = _preprocess(img)
+        text = pytesseract.image_to_string(img, config=TESS_CONFIG)
+        return text.strip()
+    except Exception:
+        return ""
+
+
 def ocr_document(pdf_path: str, page_infos: List[PageInfo],
                  progress_callback=None) -> List[dict]:
     """
