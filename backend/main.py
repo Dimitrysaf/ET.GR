@@ -100,6 +100,7 @@ try:
     )
     from backend.storage.organizer import ensure_dirs, output_paths, write_text
     from backend.storage.versioning import get_current_law_text, snapshot_and_update
+    from backend.codification.codifier import codify
     from backend.config import (
         INPUT_DIR,
         OLLAMA_BASE_URL,
@@ -127,6 +128,7 @@ except Exception:  # pragma: no cover - careful fallback for missing deps
         )
         from storage.organizer import ensure_dirs, output_paths, write_text
         from storage.versioning import get_current_law_text, snapshot_and_update
+        from codification.codifier import codify
         from config import (
             INPUT_DIR,
             OLLAMA_BASE_URL,
@@ -175,6 +177,7 @@ except Exception:  # pragma: no cover - careful fallback for missing deps
         write_text = lambda path, text: None
         get_current_law_text = _missing("get_current_law_text")
         snapshot_and_update = _missing("snapshot_and_update")
+        codify = _missing("codify")
 
         # Conservative defaults for config values used at import time
         SCRIPT_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -460,6 +463,105 @@ async def process(files: List[UploadFile] = File(...)):
             await _event("error", f"Failed {f.filename}", error=str(exc))
 
     return JSONResponse({"ok": True, "count": len(results), "results": results})
+
+
+# ── Codification (Level 2) ──────────────────────────────────────────────────
+
+
+def _read_archive_keimeno(doc_id: str):
+    """Διάβασε <Keimeno> + <Hmerominia> από το αποθηκευμένο αρχειακό XML.
+
+    Reads the saved archive XML for doc_id from OUTPUT_XML_DIR and returns
+    (raw_text, hmerominia). Returns (None, None) if not found.
+    """
+    paths = output_paths(doc_id)
+    xml_path = paths["xml"]
+    if not os.path.exists(xml_path):
+        return None, None
+    try:
+        from lxml import etree as ET  # local import; lxml is a project dep
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        keimeno_el = root.find(".//Keimeno")
+        hmer_el = root.find(".//Hmerominia")
+        raw_text = keimeno_el.text if keimeno_el is not None else None
+        hmerominia = hmer_el.text if hmer_el is not None else None
+        return raw_text, hmerominia
+    except Exception as exc:
+        logger.warning("could not parse archive XML for %s: %s", doc_id, exc)
+        return None, None
+
+
+@app.post("/codify")
+async def codify_endpoint(payload: Dict):
+    """Κωδικοποίηση νόμων από τροποποιήσεις ΦΕΚ (explicit, ξεχωριστό βήμα).
+
+    Accepts JSON either:
+      {"raw_text": "...", "effective_date": "YYYY-MM-DD"?, "use_claude": false}
+    OR
+      {"doc_id": "..."}  → reads <Keimeno>/<Hmerominia> from the saved archive XML.
+    Returns {"ok": true, "results": [CodificationResult, ...]}.
+    """
+    raw_text = (payload or {}).get("raw_text")
+    effective_date = (payload or {}).get("effective_date")
+    use_claude = bool((payload or {}).get("use_claude", False))
+    doc_id = (payload or {}).get("doc_id")
+
+    if doc_id and not raw_text:
+        raw_text, hmerominia = _read_archive_keimeno(doc_id)
+        if raw_text is None:
+            return JSONResponse(
+                {"ok": False, "error": f"archive not found for doc_id={doc_id}"},
+                status_code=404,
+            )
+        if not effective_date:
+            effective_date = hmerominia
+
+    if not raw_text:
+        return JSONResponse(
+            {"ok": False, "error": "raw_text or doc_id required"}, status_code=400
+        )
+
+    await _event("codify_start", "Codification started", doc_id=doc_id)
+
+    loop = asyncio.get_running_loop()
+
+    def codify_log(source: str, message: str) -> None:
+        logger.info("%s %s", source, message)
+        asyncio.run_coroutine_threadsafe(_log("info", source, message), loop)
+
+    try:
+        results = await asyncio.to_thread(
+            codify, raw_text, effective_date, codify_log, use_claude
+        )
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logger.exception("codify failed")
+        await _log("error", "codify", f"failed error={exc}", traceback=tb)
+        await _event("codify_done", "Codification failed", error=str(exc))
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    out = [
+        {
+            "law_id": r.law_id,
+            "applied": r.applied,
+            "queued_for_review": r.queued_for_review,
+            "diff": r.diff,
+            "current_path": r.current_path,
+            "version_path": r.version_path,
+            "notes": r.notes,
+        }
+        for r in results
+    ]
+    for r in out:
+        await _event(
+            "codify",
+            f"Codified {r['law_id']}: applied={r['applied']} queued={r['queued_for_review']}",
+            **r,
+        )
+
+    await _event("codify_done", "Codification finished", count=len(out))
+    return JSONResponse({"ok": True, "count": len(out), "results": out})
 
 
 # ── AI purge ──────────────────────────────────────────────────────────────────
