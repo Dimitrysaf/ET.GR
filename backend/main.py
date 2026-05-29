@@ -204,37 +204,65 @@ async def process_pdf(pdf_path: str) -> Dict:
     # ── Extract Images ──────────────────────────────────────
     await _event("extract_images", "Extracting images from PDF")
     extracted_images = extract_images_from_pdf(pdf_path)
-
+    
     loop = asyncio.get_running_loop()
-
+    
     # ── Classify and OCR Images ─────────────────────────────
     image_processed_content = {} # xref -> text or marker
-
+    pure_text_image_map = {} # xref -> text
+    
     for i, img_info in enumerate(extracted_images):
         await _event("ocr", f"Processing image {i+1}/{len(extracted_images)}", done=i, total=len(extracted_images))
-
+        
         category = await asyncio.to_thread(classify_image, img_info["image_path"])
         if category == "pure_text":
             text = await asyncio.to_thread(ocr_image, img_info["image_path"])
             image_processed_content[img_info["xref"]] = text
+            pure_text_image_map[img_info["xref"]] = text
         else:
             # Keep as image marker for later replacement in markdown
             rel_path = os.path.relpath(img_info["image_path"], os.path.dirname(os.path.dirname(__file__)))
             image_processed_content[img_info["xref"]] = f"![{category}](/{rel_path})"
 
-    # ── MarkItDown Conversion ───────────────────────────────
-    await _event("markitdown", "Converting PDF to Markdown using MarkItDown")
-
+    # ── MarkItDown Conversion (Page by Page) ────────────────
+    await _event("markitdown", "Converting PDF to Markdown using MarkItDown (page by page)")
+    
     md_converter = MarkItDown(docintel_endpoint=DOCINTEL_ENDPOINT)
-    result = await asyncio.to_thread(md_converter.convert, pdf_path)
-    raw_text = result.text_content
-
-    # Post-process raw_text to append non-text images
-    non_text_images = [v for k, v in image_processed_content.items() if "![" in v]
-    if non_text_images:
-        raw_text += "\n\n## Extracted Images (Photos/Tables/Charts)\n\n"
-        raw_text += "\n\n".join(non_text_images)
-
+    doc = fitz.open(pdf_path)
+    merged_md_parts = []
+    
+    for page_num in range(1, len(doc) + 1):
+        # Create a 1-page temporary PDF for MarkItDown
+        temp_page_path = f"{pdf_path}_page_{page_num}.pdf"
+        temp_doc = fitz.open()
+        temp_doc.insert_pdf(doc, from_page=page_num-1, to_page=page_num-1)
+        temp_doc.save(temp_page_path)
+        temp_doc.close()
+        
+        try:
+            page_result = await asyncio.to_thread(md_converter.convert, temp_page_path)
+            page_md = page_result.text_content
+            
+            # Find images for this page
+            page_images = [img for img in extracted_images if img["page_num"] == page_num]
+            for img in page_images:
+                processed = image_processed_content.get(img["xref"], "")
+                if "![" in processed: # it's a photo/table/chart
+                    # Try to insert marker or append if not found
+                    page_md += f"\n\n{processed}\n\n"
+                elif processed: # it's pure_text
+                    # Check if already there, otherwise append
+                    if processed[:50] not in page_md:
+                        page_md += f"\n\n[OCR TEXT]:\n{processed}\n\n"
+            
+            merged_md_parts.append(f"[PAGE {page_num}]\n\n{page_md}")
+        finally:
+            if os.path.exists(temp_page_path):
+                os.remove(temp_page_path)
+    
+    doc.close()
+    raw_text = "\n\n".join(merged_md_parts)
+    
     await _event("merge", "Markdown content ready", chars=len(raw_text))
 
     # ── AI structuring ───────────────────────────────────────

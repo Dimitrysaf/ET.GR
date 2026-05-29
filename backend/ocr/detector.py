@@ -120,26 +120,26 @@ def extract_images_from_pdf(pdf_path: str) -> List[dict]:
     for page_index in range(len(doc)):
         page = doc[page_index]
         image_list = page.get_images(full=True)
-
+        
         for img_index, img in enumerate(image_list):
             xref = img[0]
             base_image = doc.extract_image(xref)
             image_bytes = base_image["image"]
             ext = base_image["ext"]
-
+            
             image_filename = f"{uuid.uuid4()}.{ext}"
             image_path = os.path.join(IMAGES_DIR, image_filename)
-
+            
             with open(image_path, "wb") as f:
                 f.write(image_bytes)
-
+            
             extracted.append({
                 "page_num": page_index + 1,
                 "image_path": image_path,
                 "xref": xref,
                 "ext": ext
             })
-
+            
     doc.close()
     return extracted
 

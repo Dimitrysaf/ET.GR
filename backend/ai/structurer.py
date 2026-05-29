@@ -26,7 +26,7 @@ Output ONLY a single valid JSON object. No markdown. No code fences. No explanat
 REQUIRED OUTPUT SCHEMA (use these EXACT field names, all snake_case):
 {
   "document_type": "fek",
-  "title": "full title string",
+  "title": "full descriptive title",
   "document_id": "ΦΕΚ Α' 1/2026 or law number",
   "publication_date": "YYYY-MM-DD",
   "sections": [
@@ -51,11 +51,18 @@ REQUIRED OUTPUT SCHEMA (use these EXACT field names, all snake_case):
 }
 
 RULES:
-- document_type: use "fek" for gazette issues, "law" for standalone laws, "unknown" if unclear
-- publication_date: YYYY-MM-DD format only, null if not found
-- sections: preserve all meaningful text; use "heading" for article titles, "paragraph" for body
-- amendments: only include if the document explicitly modifies another law; empty array [] otherwise
-- confidence: float 0.0-1.0; use <0.75 for uncertain items and set question_for_human
+- document_type: use "fek" for gazette issues, "law" for standalone laws, "presidential_decree" for Προεδρικά Διατάγματα, "cabinet_act" for Πράξεις Υπουργικού Συμβουλίου.
+- title: Extract the FULL, LONG descriptive title from the first page. E.g. 'Στελέχωση του Ιδιαίτερου Γραφείου...'.
+- document_id: "ΦΕΚ Α' 1/2026" or similar. Look for 'Αρ. Φύλλου' and 'Τεύχος'.
+- publication_date: YYYY-MM-DD format only, null if not found.
+- sections: This is the MOST IMPORTANT field. It must contain the ENTIRE BODY of the document. You MUST EXTRACT EVERY SINGLE SENTENCE and WORD. DO NOT SUMMARIZE. DO NOT OMIT ANYTHING.
+- Every single line of text from the source MUST be represented in the "sections" array.
+- For each paragraph, list item, or block of text, create a {"kind": "paragraph", "text": "..."} entry.
+- Use "heading" for: Article titles (e.g. 'ΑΡΘΡΟ 1'), Major headings (e.g. 'ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ', 'Αποφασίζει:', 'Πράξη 39').
+- Use "paragraph" for everything else. If you are unsure, use "paragraph".
+- signatures: Extract all names and titles of the signers at the end of the document.
+- amendments: only include if the document explicitly modifies another law; empty array [] otherwise.
+- confidence: float 0.0-1.0; use <0.75 for uncertain items and set question_for_human.
 - All field names MUST be snake_case exactly as shown above""".strip()
 
 # Minimal retry prompt - used when first attempt fails JSON parsing
@@ -271,8 +278,8 @@ def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # With OLLAMA_NUM_CTX=4096 we have room for ~2800 tokens of user text
 # (system prompt ≈ 350 tokens, JSON schema ≈ 200 tokens, safety margin ≈ 500).
 # 1 token ≈ 3.5 chars for Greek text → ~9800 chars per chunk.
-# We use 8000 to be safe.
-_MAX_CHARS_PER_CHUNK = 8000
+# We use 6000 as a balance between context size and output token limit.
+_MAX_CHARS_PER_CHUNK = 6000
 
 
 def _split_into_chunks(text: str) -> List[str]:

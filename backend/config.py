@@ -49,7 +49,7 @@ OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", 4096))
 
 # Output tokens.  Complex ΦΕΚ with many amendments can produce 1 500–2 500
 # tokens of JSON output.  Too low → truncated JSON → parse errors.
-OLLAMA_MAX_OUTPUT_TOKENS = int(os.environ.get("OLLAMA_MAX_OUTPUT_TOKENS", 2048))
+OLLAMA_MAX_OUTPUT_TOKENS = int(os.environ.get("OLLAMA_MAX_OUTPUT_TOKENS", 4096))
 
 # ── Memory safety ────────────────────────────────────────────────────────────
 RAM_DANGER_GB = float(os.environ.get("RAM_DANGER_GB", 2.5))
