@@ -1,264 +1,672 @@
 <!DOCTYPE html>
 <html lang="el" class="govuk-template">
 <head>
-    <meta charset="utf-8">
-    <title>ΦΕΚ Processor - GOV.UK Design System</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0b0c0c">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.css">
-    <style>
-        .fek-diff {
-            font-family: monospace;
-            white-space: pre-wrap;
-            background-color: #f3f2f1;
-            padding: 15px;
-            border: 1px solid #b1b4b6;
-        }
-        .diff-added { color: #00703c; background-color: #d7f1e6; }
-        .diff-removed { color: #d4351c; background-color: #f9d6d2; }
-        .diff-header { color: #505a5f; font-weight: bold; }
-        
-        .preview-container {
-            border: 1px solid #b1b4b6;
-            height: 600px;
-            overflow: auto;
-            background: white;
-            padding: 20px;
-        }
-        #preview-frame {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-        .ws-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 14px;
-            margin-left: 10px;
-        }
-        .ws-connected { background: #00703c; color: white; }
-        .ws-disconnected { background: #d4351c; color: white; }
-    </style>
+  <meta charset="utf-8">
+  <title>ΦΕΚ Processor — Εφημερίδα της Κυβερνήσεως</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c0c">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.css">
+  <style>
+    /* ── Brand overrides ──────────────────────────────────────── */
+    :root {
+      --gr-blue:   #003476;  /* Greek government blue */
+      --gr-cyan:   #0070c9;
+      --gr-gold:   #c9a227;
+      --gr-light:  #f5f6f8;
+      --gr-border: #dee0e2;
+    }
+
+    .govuk-header {
+      background-color: var(--gr-blue);
+      border-bottom: 4px solid var(--gr-gold);
+    }
+    .govuk-header__logotype-text { font-size: 1rem; letter-spacing: .02em; }
+    .gov-brand {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .gov-brand__emblem {
+      width: 40px; height: 40px; flex-shrink: 0;
+      background: var(--gr-gold);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.25rem; font-weight: 700; color: var(--gr-blue);
+      font-family: serif;
+    }
+    .gov-brand__text { display: flex; flex-direction: column; line-height: 1.2; }
+    .gov-brand__title { font-size: 1rem; font-weight: 700; color: #fff; }
+    .gov-brand__subtitle { font-size: .75rem; color: rgba(255,255,255,.75); }
+
+    /* ── Phase banner ─────────────────────────────────────────── */
+    .phase-banner-custom {
+      background: var(--gr-blue);
+      border-bottom: 1px solid rgba(255,255,255,.15);
+      padding: 6px 0;
+    }
+    .phase-banner-custom .govuk-width-container {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .phase-tag {
+      background: var(--gr-gold); color: var(--gr-blue);
+      font-weight: 700; font-size: .75rem;
+      padding: 2px 8px; border-radius: 2px; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .phase-text { color: rgba(255,255,255,.8); font-size: .8rem; }
+
+    /* ── Layout ───────────────────────────────────────────────── */
+    .app-layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 0;
+      min-height: calc(100vh - 120px);
+    }
+    .app-sidebar {
+      background: #fff;
+      border-right: 1px solid var(--gr-border);
+      padding: 24px 20px;
+      display: flex; flex-direction: column; gap: 24px;
+    }
+    .app-main {
+      background: var(--gr-light);
+      padding: 24px 28px;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+
+    /* ── Upload zone ──────────────────────────────────────────── */
+    .upload-zone {
+      border: 2px dashed #b1b4b6;
+      border-radius: 4px;
+      padding: 28px 20px;
+      text-align: center;
+      background: #fafafa;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--gr-cyan);
+      background: #e8f4fd;
+    }
+    .upload-zone__icon { font-size: 2rem; margin-bottom: 8px; color: #505a5f; }
+    .upload-zone__label { font-weight: 700; color: #0b0c0c; display: block; margin-bottom: 4px; }
+    .upload-zone__hint { font-size: .85rem; color: #505a5f; }
+    .upload-zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+
+    /* ── File list ────────────────────────────────────────────── */
+    .file-list { list-style: none; margin: 0; padding: 0; }
+    .file-list__item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 0; border-bottom: 1px solid var(--gr-border);
+      font-size: .875rem;
+    }
+    .file-list__icon { color: #d4351c; font-size: 1.1rem; }
+    .file-list__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-list__size { color: #505a5f; font-size: .8rem; white-space: nowrap; }
+
+    /* ── Action buttons ───────────────────────────────────────── */
+    .action-bar { display: flex; flex-direction: column; gap: 10px; }
+    .govuk-button { width: 100%; text-align: center; justify-content: center; }
+
+    /* ── Progress log ─────────────────────────────────────────── */
+    .progress-box {
+      background: #0b0c0c;
+      color: #e8f4e8;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: .78rem;
+      border-radius: 4px;
+      padding: 12px 14px;
+      height: 220px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .log-line { display: flex; gap: 8px; }
+    .log-ts { color: #6daa6d; flex-shrink: 0; }
+    .log-stage { color: #7ec8e3; flex-shrink: 0; min-width: 60px; }
+    .log-msg { color: #d4d4d4; }
+    .log-error .log-stage { color: #f48771; }
+    .log-error .log-msg { color: #f48771; }
+
+    /* ── Connection badge ─────────────────────────────────────── */
+    .conn-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: .8rem; padding: 4px 10px; border-radius: 20px;
+      font-weight: 600;
+    }
+    .conn-badge__dot { width: 8px; height: 8px; border-radius: 50%; }
+    .conn-badge--connected { background: #d7f1e6; color: #00703c; }
+    .conn-badge--connected .conn-badge__dot { background: #00703c; }
+    .conn-badge--disconnected { background: #f9d6d2; color: #d4351c; }
+    .conn-badge--disconnected .conn-badge__dot { background: #d4351c; }
+
+    /* ── Section header ───────────────────────────────────────── */
+    .section-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .section-hd h2 { margin: 0; }
+
+    /* ── Tabs (results area) ──────────────────────────────────── */
+    .app-tabs {
+      background: #fff;
+      border: 1px solid var(--gr-border);
+      border-radius: 4px;
+      overflow: hidden;
+      flex: 1;
+    }
+    .app-tabs__nav {
+      display: flex;
+      border-bottom: 2px solid var(--gr-border);
+      background: #f5f6f8;
+    }
+    .app-tabs__btn {
+      padding: 12px 20px;
+      font-size: .875rem;
+      font-weight: 600;
+      color: #505a5f;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      transition: color .15s, border-color .15s;
+    }
+    .app-tabs__btn:hover { color: var(--gr-blue); }
+    .app-tabs__btn.active {
+      color: var(--gr-blue);
+      border-bottom-color: var(--gr-blue);
+      background: #fff;
+    }
+    .app-tabs__panel { display: none; padding: 20px; }
+    .app-tabs__panel.active { display: block; }
+
+    /* ── Preview iframe ───────────────────────────────────────── */
+    .preview-wrap {
+      border: 1px solid var(--gr-border);
+      border-radius: 2px;
+      height: 540px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .preview-wrap iframe { width: 100%; height: 100%; border: none; }
+
+    /* ── Document cards ───────────────────────────────────────── */
+    .doc-card {
+      border: 1px solid var(--gr-border);
+      border-radius: 4px;
+      background: #fff;
+      padding: 16px 18px;
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      transition: box-shadow .15s;
+    }
+    .doc-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    .doc-card + .doc-card { margin-top: 10px; }
+    .doc-card__body { flex: 1; min-width: 0; }
+    .doc-card__title { font-weight: 700; font-size: .9rem; color: #0b0c0c; margin: 0 0 4px; }
+    .doc-card__meta { font-size: .8rem; color: #505a5f; }
+    .doc-card__actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .btn-sm {
+      padding: 5px 12px; font-size: .8rem; font-weight: 600;
+      border-radius: 3px; border: 1px solid; cursor: pointer;
+      text-decoration: none; display: inline-block;
+    }
+    .btn-sm--primary { background: var(--gr-blue); color: #fff; border-color: var(--gr-blue); }
+    .btn-sm--secondary { background: #fff; color: var(--gr-blue); border-color: var(--gr-blue); }
+    .btn-sm--ghost { background: #fff; color: #505a5f; border-color: #b1b4b6; }
+
+    /* ── Review queue ─────────────────────────────────────────── */
+    .review-card {
+      border-left: 4px solid #fd0;
+      background: #fff9c4;
+      padding: 12px 16px;
+      border-radius: 0 4px 4px 0;
+      margin-bottom: 10px;
+    }
+    .review-card__law { font-weight: 700; font-size: .875rem; }
+    .review-card__detail { font-size: .8rem; color: #505a5f; margin-top: 4px; }
+
+    /* ── Codification panel ───────────────────────────────────── */
+    .codify-panel {
+      background: #fff;
+      border: 1px solid var(--gr-border);
+      border-radius: 4px;
+      padding: 20px;
+    }
+    .codify-result {
+      border: 1px solid var(--gr-border);
+      border-radius: 4px;
+      padding: 12px 16px;
+      margin-top: 12px;
+      font-size: .85rem;
+    }
+    .codify-result__law { font-weight: 700; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 20px;
+      font-size: .75rem; font-weight: 700;
+    }
+    .badge--green { background: #d7f1e6; color: #00703c; }
+    .badge--yellow { background: #fff9c4; color: #594d00; }
+    .badge--red { background: #f9d6d2; color: #d4351c; }
+
+    /* ── Empty states ─────────────────────────────────────────── */
+    .empty-state {
+      text-align: center; padding: 48px 20px; color: #505a5f;
+    }
+    .empty-state__icon { font-size: 2.5rem; margin-bottom: 12px; opacity: .5; }
+    .empty-state__text { font-size: .9rem; }
+
+    /* ── Responsive ───────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .app-layout { grid-template-columns: 1fr; }
+      .app-sidebar { border-right: none; border-bottom: 1px solid var(--gr-border); }
+    }
+  </style>
 </head>
 <body class="govuk-template__body">
-    <script>document.body.className = ((document.body.className) ? document.body.className + ' js-enabled' : 'js-enabled');</script>
+<script>document.body.className = ((document.body.className) ? document.body.className + ' js-enabled' : 'js-enabled');</script>
 
-    <header class="govuk-header" role="banner" data-module="govuk-header">
-        <div class="govuk-header__container govuk-width-container">
-            <div class="govuk-header__logo">
-                <a href="#" class="govuk-header__link govuk-header__link--homepage">
-                    <span class="govuk-header__logotype">
-                        <span class="govuk-header__logotype-text">ΦΕΚ Processor</span>
-                    </span>
-                </a>
-            </div>
-            <div class="govuk-header__content">
-                <span id="wsBadge" class="ws-badge ws-disconnected">Αποσυνδεδεμένο</span>
-            </div>
-        </div>
-    </header>
-
-    <div class="govuk-width-container">
-        <main class="govuk-main-wrapper" id="main-content" role="main">
-            <div class="govuk-grid-row">
-                <div class="govuk-grid-column-one-third">
-                    <h2 class="govuk-heading-m">Επεξεργασία PDF</h2>
-                    
-                    <div class="govuk-form-group">
-                        <label class="govuk-label" for="file-upload">Επιλέξτε ΦΕΚ PDF</label>
-                        <input class="govuk-file-upload" id="fileInput" name="file-upload" type="file" accept="application/pdf" multiple>
-                    </div>
-
-                    <button id="processBtn" class="govuk-button" data-module="govuk-button" disabled>▶ Επεξεργασία</button>
-                    <button id="purgeBtn" class="govuk-button govuk-button--warning" data-module="govuk-button">⛔ Διαγραφή AI</button>
-
-                    <div class="govuk-tabs" data-module="govuk-tabs">
-                        <h2 class="govuk-tabs__title">Logs</h2>
-                        <ul class="govuk-tabs__list">
-                            <li class="govuk-tabs__list-item govuk-tabs__list-item--selected">
-                                <a class="govuk-tabs__tab" href="#tab-progress">Πρόοδος</a>
-                            </li>
-                            <li class="govuk-tabs__list-item">
-                                <a class="govuk-tabs__tab" href="#tab-errors">Σφάλματα</a>
-                            </li>
-                        </ul>
-                        <div class="govuk-tabs__panel" id="tab-progress" style="font-size: 14px; font-family: monospace; height: 300px; overflow-y: scroll;"></div>
-                        <div class="govuk-tabs__panel govuk-tabs__panel--hidden" id="tab-errors" style="font-size: 14px; font-family: monospace; height: 300px; overflow-y: scroll;"></div>
-                    </div>
-                </div>
-
-                <div class="govuk-grid-column-two-thirds">
-                    <div class="govuk-tabs" data-module="govuk-tabs">
-                        <h2 class="govuk-tabs__title">Αποτελέσματα</h2>
-                        <ul class="govuk-tabs__list">
-                            <li class="govuk-tabs__list-item govuk-tabs__list-item--selected">
-                                <a class="govuk-tabs__tab" href="#rtab-preview">Προεπισκόπηση</a>
-                            </li>
-                            <li class="govuk-tabs__list-item">
-                                <a class="govuk-tabs__tab" href="#rtab-outputs">Αποτελέσματα</a>
-                            </li>
-                            <li class="govuk-tabs__list-item">
-                                <a class="govuk-tabs__tab" href="#rtab-review">Αναθεώρηση</a>
-                            </li>
-                        </ul>
-                        <div class="govuk-tabs__panel" id="rtab-preview">
-                            <div class="preview-container">
-                                <iframe id="preview-frame" srcdoc="<html><body style='font-family:sans-serif;color:#505a5f;padding:40px;text-align:center'><p>Επεξεργαστείτε ένα ΦΕΚ για προεπισκόπηση.</p></body></html>"></iframe>
-                            </div>
-                        </div>
-                        <div class="govuk-tabs__panel govuk-tabs__panel--hidden" id="rtab-outputs">
-                            <div id="outputList">
-                                <p class="govuk-body">Δεν υπάρχουν αποτελέσματα ακόμα.</p>
-                            </div>
-                        </div>
-                        <div class="govuk-tabs__panel govuk-tabs__panel--hidden" id="rtab-review">
-                            <div id="reviewList">
-                                <p class="govuk-body">Κανένα έγγραφο σε αναμονή αναθεώρησης.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="govuk-header" role="banner">
+  <div class="govuk-width-container" style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;padding-bottom:12px;">
+    <div class="gov-brand">
+      <div class="gov-brand__emblem">Ε</div>
+      <div class="gov-brand__text">
+        <span class="gov-brand__title">Εφημερίδα της Κυβερνήσεως</span>
+        <span class="gov-brand__subtitle">ΦΕΚ Processor — Σύστημα Κωδικοποίησης Νόμων</span>
+      </div>
     </div>
+    <span id="wsBadge" class="conn-badge conn-badge--disconnected">
+      <span class="conn-badge__dot"></span> Αποσυνδεδεμένο
+    </span>
+  </div>
+</header>
 
-    <footer class="govuk-footer" role="contentinfo">
-        <div class="govuk-width-container">
-            <div class="govuk-footer__meta">
-                <div class="govuk-footer__meta-item govuk-footer__meta-item--grow">
-                    <span class="govuk-footer__licence-description">
-                        All content is available under the <a class="govuk-footer__link" href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/" rel="license">Open Government Licence v3.0</a>, except where otherwise stated
-                    </span>
-                </div>
-            </div>
+<!-- ── Phase banner ───────────────────────────────────────────────────────── -->
+<div class="phase-banner-custom">
+  <div class="govuk-width-container">
+    <span class="phase-tag">Beta</span>
+    <span class="phase-text">Αυτό το σύστημα βρίσκεται σε πειραματικό στάδιο — επεξεργασία ΦΕΚ με regex, χωρίς AI.</span>
+  </div>
+</div>
+
+<!-- ── Main layout ────────────────────────────────────────────────────────── -->
+<div class="govuk-width-container" style="max-width:1400px;">
+  <div class="app-layout">
+
+    <!-- Sidebar -->
+    <aside class="app-sidebar">
+
+      <!-- Upload -->
+      <div>
+        <div class="section-hd">
+          <h2 class="govuk-heading-s" style="margin:0 0 10px;">Εισαγωγή ΦΕΚ</h2>
         </div>
-    </footer>
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-zone__icon">📄</div>
+          <span class="upload-zone__label">Επιλέξτε ή σύρετε PDF</span>
+          <span class="upload-zone__hint">Αποδεκτά: .pdf · Πολλαπλά αρχεία</span>
+          <input type="file" id="fileInput" accept="application/pdf" multiple>
+        </div>
+        <ul class="file-list" id="fileList"></ul>
+      </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.js"></script>
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            window.GOVUKFrontend.initAll();
-        });
-    </script>
-    <script>
-        let ws = null;
-        let selectedFiles = [];
+      <!-- Actions -->
+      <div class="action-bar">
+        <button id="processBtn" class="govuk-button" data-module="govuk-button" disabled>
+          ▶ Επεξεργασία ΦΕΚ
+        </button>
+        <button id="codifyBtn" class="govuk-button govuk-button--secondary" data-module="govuk-button" disabled>
+          ⚖ Κωδικοποίηση
+        </button>
+        <button id="purgeBtn" class="govuk-button govuk-button--warning" data-module="govuk-button">
+          ✕ Εκκαθάριση δεδομένων
+        </button>
+      </div>
 
-        function logTo(panelId, text, cls) {
-            const el = document.getElementById(panelId);
-            const line = document.createElement('div');
-            line.style.marginBottom = '5px';
-            if (cls) line.className = cls;
-            line.textContent = text;
-            el.appendChild(line);
-            el.scrollTop = el.scrollHeight;
-        }
+      <!-- Codify options (hidden until needed) -->
+      <div id="codifyOptions" style="display:none;">
+        <label class="govuk-label govuk-!-font-size-16" for="effectiveDate">Ημερομηνία ισχύος</label>
+        <input class="govuk-input govuk-input--width-10" type="date" id="effectiveDate"
+               value="">
+      </div>
 
-        function connectWS() {
-            const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-            ws = new WebSocket(`${proto}://${location.host}/ws`);
-            const badge = document.getElementById('wsBadge');
+      <!-- Progress log -->
+      <div>
+        <div class="section-hd" style="margin-bottom:8px;">
+          <span class="govuk-label" style="margin:0;">Αρχείο καταγραφής</span>
+          <button onclick="document.getElementById('progressLog').innerHTML=''" class="btn-sm btn-sm--ghost" style="font-size:.75rem;padding:3px 8px;">Καθαρισμός</button>
+        </div>
+        <div class="progress-box" id="progressLog">
+          <div class="log-line"><span class="log-stage">sys</span><span class="log-msg">Αναμονή σύνδεσης…</span></div>
+        </div>
+      </div>
 
-            ws.onopen = () => {
-                badge.textContent = 'Συνδεδεμένο';
-                badge.className = 'ws-badge ws-connected';
-                logTo('tab-progress', '[ws] συνδέθηκε');
-            };
+    </aside>
 
-            ws.onclose = () => {
-                badge.textContent = 'Αποσυνδεδεμένο';
-                badge.className = 'ws-badge ws-disconnected';
-                setTimeout(connectWS, 3000);
-            };
+    <!-- Main content -->
+    <main class="app-main" id="main-content" role="main">
 
-            ws.onmessage = (ev) => {
-                let msg;
-                try { msg = JSON.parse(ev.data); } catch { return; }
-                const { stage, message, ts } = msg;
+      <!-- Tabs -->
+      <div class="app-tabs">
+        <nav class="app-tabs__nav" role="tablist">
+          <button class="app-tabs__btn active" role="tab" data-tab="preview">🔍 Προεπισκόπηση</button>
+          <button class="app-tabs__btn" role="tab" data-tab="outputs">📁 Αρχεία</button>
+          <button class="app-tabs__btn" role="tab" data-tab="codification">⚖ Κωδικοποίηση</button>
+          <button class="app-tabs__btn" role="tab" data-tab="review">⚠ Αναθεώρηση</button>
+        </nav>
 
-                if (stage === 'error') {
-                    logTo('tab-errors', message, 'govuk-error-message');
-                    return;
-                }
+        <!-- Preview -->
+        <div class="app-tabs__panel active" id="panel-preview">
+          <div class="preview-wrap">
+            <iframe id="previewFrame"
+              srcdoc="<html><body style='font-family:sans-serif;color:#505a5f;padding:60px;text-align:center;background:#f5f6f8'><div style='max-width:320px;margin:auto'><div style='font-size:3rem;margin-bottom:16px'>📋</div><p style='font-size:1rem;font-weight:700;color:#0b0c0c'>Καμία προεπισκόπηση</p><p style='font-size:.9rem'>Επεξεργαστείτε ένα ΦΕΚ για να εμφανιστεί εδώ.</p></div></body></html>">
+            </iframe>
+          </div>
+        </div>
 
-                logTo('tab-progress', `[${stage}] ${message}`);
+        <!-- Outputs -->
+        <div class="app-tabs__panel" id="panel-outputs">
+          <div id="outputList">
+            <div class="empty-state">
+              <div class="empty-state__icon">📂</div>
+              <div class="empty-state__text">Δεν υπάρχουν επεξεργασμένα αρχεία ακόμα.</div>
+            </div>
+          </div>
+        </div>
 
-                if (msg.ai_preview) {
-                    document.getElementById('preview-frame').srcdoc = msg.ai_preview;
-                }
+        <!-- Codification results -->
+        <div class="app-tabs__panel" id="panel-codification">
+          <div id="codifyResults">
+            <div class="empty-state">
+              <div class="empty-state__icon">⚖</div>
+              <div class="empty-state__text">Επιλέξτε ένα ΦΕΚ και πατήστε «Κωδικοποίηση».</div>
+            </div>
+          </div>
+        </div>
 
-                if (stage === 'save' && msg.html_url) {
-                    document.getElementById('preview-frame').src = msg.html_url;
-                }
+        <!-- Review queue -->
+        <div class="app-tabs__panel" id="panel-review">
+          <div id="reviewList">
+            <div class="empty-state">
+              <div class="empty-state__icon">✅</div>
+              <div class="empty-state__text">Δεν υπάρχουν εκκρεμείς αναθεωρήσεις.</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
-                if (stage === 'done') {
-                    loadOutputs();
-                    loadReviewQueue();
-                }
-            };
-        }
+    </main>
+  </div>
+</div>
 
-        connectWS();
+<!-- ── Footer ─────────────────────────────────────────────────────────────── -->
+<footer class="govuk-footer" role="contentinfo" style="margin-top:0;border-top:1px solid var(--gr-border);">
+  <div class="govuk-width-container">
+    <div class="govuk-footer__meta">
+      <div class="govuk-footer__meta-item govuk-footer__meta-item--grow">
+        <span class="govuk-footer__licence-description">
+          Σύστημα επεξεργασίας ΦΕΚ — Ανοιχτός κώδικας υπό
+          <a class="govuk-footer__link" href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/" rel="license">Open Government Licence v3.0</a>
+        </span>
+      </div>
+      <div class="govuk-footer__meta-item">
+        <span class="govuk-footer__licence-description" style="color:#505a5f;">
+          ELI-συμβατό · Τοπική εκτέλεση · Χωρίς AI
+        </span>
+      </div>
+    </div>
+  </div>
+</footer>
 
-        const fileInput = document.getElementById('fileInput');
-        fileInput.addEventListener('change', () => {
-            selectedFiles = [...fileInput.files];
-            document.getElementById('processBtn').disabled = selectedFiles.length === 0;
-        });
+<script src="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => window.GOVUKFrontend.initAll());
 
-        document.getElementById('processBtn').addEventListener('click', async () => {
-            const form = new FormData();
-            selectedFiles.forEach(f => form.append('files', f));
-            document.getElementById('processBtn').disabled = true;
-            try {
-                await fetch('/process', { method: 'POST', body: form });
-            } catch (err) {
-                logTo('tab-errors', String(err));
-            } finally {
-                document.getElementById('processBtn').disabled = false;
-            }
-        });
+// ── Tabs ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.app-tabs__btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.app-tabs__btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.app-tabs__panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + tab).classList.add('active');
+  });
+});
 
-        async function loadOutputs() {
-            const res = await fetch('/outputs');
-            const data = await res.json();
-            const list = document.getElementById('outputList');
-            if (!data.outputs.length) {
-                list.innerHTML = '<p class="govuk-body">Δεν υπάρχουν αποτελέσματα ακόμα.</p>';
-                return;
-            }
-            list.innerHTML = data.outputs.map(o => `
-                <div class="govuk-summary-list__row">
-                    <dt class="govuk-summary-list__key">${o.id}</dt>
-                    <dd class="govuk-summary-list__actions">
-                        <a class="govuk-link" href="${o.html_url}" target="_blank">View</a>
-                    </dd>
-                </div>
-            `).join('');
-        }
+// ── Helpers ───────────────────────────────────────────────────────────────
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
-        async function loadReviewQueue() {
-            const res = await fetch('/review-queue');
-            const data = await res.json();
-            const list = document.getElementById('reviewList');
-            if (!data.items.length) {
-                list.innerHTML = '<p class="govuk-body">Κανένα έγγραφο σε αναμονή αναθεώρησης.</p>';
-                return;
-            }
-            list.innerHTML = data.items.map(item => `
-                <div class="govuk-warning-text">
-                    <span class="govuk-warning-text__icon" aria-hidden="true">!</span>
-                    <strong class="govuk-warning-text__text">
-                        <span class="govuk-visually-hidden">Warning</span>
-                        ${item.title || item.document_id}: ${item.questions ? item.questions.join(', ') : ''}
-                    </strong>
-                </div>
-            `).join('');
-        }
+function now() {
+  return new Date().toTimeString().slice(0, 8);
+}
 
-        loadOutputs();
-        loadReviewQueue();
-    </script>
+function log(stage, msg, isError = false) {
+  const box = document.getElementById('progressLog');
+  const line = document.createElement('div');
+  line.className = 'log-line' + (isError ? ' log-error' : '');
+  line.innerHTML =
+    `<span class="log-ts">${now()}</span>` +
+    `<span class="log-stage">[${stage}]</span>` +
+    `<span class="log-msg">${msg}</span>`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Upload zone ───────────────────────────────────────────────────────────
+const fileInput  = document.getElementById('fileInput');
+const uploadZone = document.getElementById('uploadZone');
+const fileList   = document.getElementById('fileList');
+const processBtn = document.getElementById('processBtn');
+const codifyBtn  = document.getElementById('codifyBtn');
+let selectedFiles = [];
+let lastDocId = null;
+
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  handleFiles([...e.dataTransfer.files].filter(f => f.type === 'application/pdf'));
+});
+fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
+
+function handleFiles(files) {
+  selectedFiles = files;
+  fileList.innerHTML = files.map(f => `
+    <li class="file-list__item">
+      <span class="file-list__icon">📄</span>
+      <span class="file-list__name">${f.name}</span>
+      <span class="file-list__size">${fmtSize(f.size)}</span>
+    </li>
+  `).join('');
+  processBtn.disabled = files.length === 0;
+  codifyBtn.disabled = true;
+  document.getElementById('codifyOptions').style.display = 'none';
+}
+
+// ── Default effective date = today ────────────────────────────────────────
+(function() {
+  const d = new Date();
+  const iso = d.toISOString().slice(0, 10);
+  document.getElementById('effectiveDate').value = iso;
+})();
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+let ws = null;
+const badge = document.getElementById('wsBadge');
+
+function setBadge(connected) {
+  badge.className = 'conn-badge ' + (connected ? 'conn-badge--connected' : 'conn-badge--disconnected');
+  badge.innerHTML = `<span class="conn-badge__dot"></span> ${connected ? 'Συνδεδεμένο' : 'Αποσυνδεδεμένο'}`;
+}
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => { setBadge(true); log('ws', 'Σύνδεση εδραιώθηκε'); };
+  ws.onclose = () => { setBadge(false); setTimeout(connectWS, 3000); };
+
+  ws.onmessage = ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    const { stage, message } = msg;
+
+    if (stage === 'error') { log(stage, message, true); return; }
+    log(stage, message);
+
+    if (stage === 'save' && msg.html_url) {
+      document.getElementById('previewFrame').src = msg.html_url;
+      // Switch to preview tab
+      document.querySelector('[data-tab="preview"]').click();
+    }
+
+    if (stage === 'done') {
+      lastDocId = msg.document_id || null;
+      codifyBtn.disabled = false;
+      document.getElementById('codifyOptions').style.display = 'block';
+      loadOutputs();
+      loadReviewQueue();
+    }
+
+    if (stage === 'codify_done' && msg.results) {
+      renderCodifyResults(msg.results);
+      document.querySelector('[data-tab="codification"]').click();
+    }
+  };
+}
+connectWS();
+
+// ── Process ───────────────────────────────────────────────────────────────
+processBtn.addEventListener('click', async () => {
+  if (!selectedFiles.length) return;
+  const form = new FormData();
+  selectedFiles.forEach(f => form.append('files', f));
+  processBtn.disabled = true;
+  log('upload', `Αποστολή ${selectedFiles.length} αρχείου(-ων)…`);
+  try {
+    await fetch('/process', { method: 'POST', body: form });
+  } catch (err) {
+    log('error', String(err), true);
+  } finally {
+    processBtn.disabled = false;
+  }
+});
+
+// ── Codify ────────────────────────────────────────────────────────────────
+codifyBtn.addEventListener('click', async () => {
+  const date = document.getElementById('effectiveDate').value;
+  if (!date) { log('error', 'Ορίστε ημερομηνία ισχύος', true); return; }
+  const body = lastDocId
+    ? { doc_id: lastDocId, effective_date: date }
+    : { raw_text: '(no document)', effective_date: date };
+  log('codify', `Κωδικοποίηση για ${date}…`);
+  try {
+    const res = await fetch('/codify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.results) renderCodifyResults(data.results);
+  } catch (err) {
+    log('error', String(err), true);
+  }
+});
+
+// ── Purge ─────────────────────────────────────────────────────────────────
+document.getElementById('purgeBtn').addEventListener('click', async () => {
+  if (!confirm('Διαγραφή όλων των δεδομένων;')) return;
+  try {
+    await fetch('/purge', { method: 'POST' });
+    document.getElementById('outputList').innerHTML = emptyState('📂', 'Δεν υπάρχουν επεξεργασμένα αρχεία ακόμα.');
+    document.getElementById('reviewList').innerHTML = emptyState('✅', 'Δεν υπάρχουν εκκρεμείς αναθεωρήσεις.');
+    log('sys', 'Τα δεδομένα εκκαθαρίστηκαν.');
+  } catch(e) { log('error', String(e), true); }
+});
+
+// ── Render helpers ────────────────────────────────────────────────────────
+function emptyState(icon, text) {
+  return `<div class="empty-state"><div class="empty-state__icon">${icon}</div><div class="empty-state__text">${text}</div></div>`;
+}
+
+async function loadOutputs() {
+  try {
+    const res = await fetch('/outputs');
+    const data = await res.json();
+    const list = document.getElementById('outputList');
+    if (!data.outputs || !data.outputs.length) {
+      list.innerHTML = emptyState('📂', 'Δεν υπάρχουν επεξεργασμένα αρχεία ακόμα.');
+      return;
+    }
+    list.innerHTML = data.outputs.map(o => `
+      <div class="doc-card">
+        <div class="doc-card__body">
+          <p class="doc-card__title">${o.id || o.document_id || 'Άγνωστο'}</p>
+          <p class="doc-card__meta">${o.teychos ? 'Τεύχος ' + o.teychos + ' · ' : ''}${o.hmerominia || ''}</p>
+        </div>
+        <div class="doc-card__actions">
+          <a class="btn-sm btn-sm--primary" href="${o.html_url}" target="_blank">HTML</a>
+          <a class="btn-sm btn-sm--secondary" href="${o.xml_url}" target="_blank">XML</a>
+          <button class="btn-sm btn-sm--ghost" onclick="previewDoc('${o.html_url}')">👁</button>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) { /* silent */ }
+}
+
+function previewDoc(url) {
+  document.getElementById('previewFrame').src = url;
+  document.querySelector('[data-tab="preview"]').click();
+}
+
+async function loadReviewQueue() {
+  try {
+    const res = await fetch('/review-queue');
+    const data = await res.json();
+    const list = document.getElementById('reviewList');
+    if (!data.items || !data.items.length) {
+      list.innerHTML = emptyState('✅', 'Δεν υπάρχουν εκκρεμείς αναθεωρήσεις.');
+      return;
+    }
+    list.innerHTML = data.items.map(item => `
+      <div class="review-card">
+        <div class="review-card__law">${item.law_id || item.document_id || 'Άγνωστος νόμος'}</div>
+        <div class="review-card__detail">${item.operation || ''} · ${item.raw_instruction || ''}</div>
+      </div>
+    `).join('');
+  } catch(e) { /* silent */ }
+}
+
+function renderCodifyResults(results) {
+  const el = document.getElementById('codifyResults');
+  if (!results || !results.length) {
+    el.innerHTML = emptyState('⚖', 'Δεν βρέθηκαν τροποποιήσεις.');
+    return;
+  }
+  el.innerHTML = results.map(r => {
+    const appliedBadge = r.applied
+      ? `<span class="badge badge--green">✓ ${r.applied} εφαρμ.</span>`
+      : '';
+    const reviewBadge = r.queued_for_review
+      ? `<span class="badge badge--yellow">⚠ ${r.queued_for_review} σε αναθ.</span>`
+      : '';
+    const notes = (r.notes || []).join('; ');
+    return `
+      <div class="codify-result">
+        <span class="codify-result__law">${r.law_id}</span>
+        <span style="margin-left:10px;">${appliedBadge} ${reviewBadge}</span>
+        ${notes ? `<div style="margin-top:6px;color:#505a5f;font-size:.8rem;">${notes}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+loadOutputs();
+loadReviewQueue();
+</script>
 </body>
 </html>
