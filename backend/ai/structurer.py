@@ -61,27 +61,35 @@ REQUIRED OUTPUT SCHEMA:
   "metadata": {"confidence": 0.95}
 }
 
+ONE-SHOT EXAMPLE (Partial):
+OCR: "Πράξη 39... Στελέχωση... ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ Έχοντας υπόψη: 1. Tις διατάξεις: α) Των παρ. 1... αποφασίζει: Αυξάνονται... Ο Πρωθυπουργός ΚΥΡΙΑΚΟΣ ΜΗΤΣΟΤΑΚΗΣ"
+JSON: {"document_type": "cabinet_act", "title": "Στελέχωση...", "preamble": [{"point": "1", "sub_points": ["α"], "text": "Τις διατάξεις..."}], "body": [{"kind": "decision_block", "text": "Αυξάνονται..."}], "signatures": [{"title": "Ο Πρωθυπουργός", "name": "ΚΥΡΙΑΚΟΣ ΜΗΤΣΟΤΑΚΗΣ"}]}
+
 STRICT RULES:
-1. CONTENT FIDELITY: You must capture EVERY WORD from the source. Do not summarize preamble points (1, 2, 3...) or alphabetical sub-points (α, β, γ...).
+1. CONTENT FIDELITY: You must capture EVERY WORD from the source. DO NOT OMIT preamble points (1, 2, 3...) or sub-points (α, β, γ...).
 2. PREAMBLE: Greek ΦΕΚ documents start with 'Έχοντας υπόψη:' followed by numbered points. Extract these EXHAUSTIVELY into the 'preamble' array.
 3. BODY: For documents with articles, use kind='article'. For Cabinet Acts (Πράξεις Υπουργικού Συμβουλίου) which use 'αποφασίζει:', use kind='decision_block' to capture the decision text.
 4. SIGNATURES: Find the list of signers at the end (e.g., 'Ο Πρωθυπουργός', 'Τα Μέλη...'). Extract both title and name.
 5. TITLES: Act titles are usually between the 'ΠΡΑΞΕΙΣ ΥΠΟΥΡΓΙΚΟΥ ΣΥΜΒΟΥΛΙΟΥ' header and the preamble.
-6. NO MARKDOWN: Output ONLY valid JSON.
+6. NO MARKDOWN: Output ONLY valid JSON. No code fences.
 """.strip()
 
 # Minimal retry prompt - used when first attempt fails JSON parsing
-RETRY_PROMPT = """Output ONLY valid JSON. No other text.
-
-Extract from this Greek legal text:
-- document_type (fek/law/unknown)
-- title
-- document_id (issue number like "ΦΕΚ Α' 1/2026")
-- publication_date (YYYY-MM-DD or null)
-- sections (array of {kind, text})
-- signatures (array of strings)
-- metadata ({confidence: 0.5})
-- amendments (empty array [])
+RETRY_PROMPT = """Output ONLY a JSON object with this structure:
+{
+  "document_type": "fek",
+  "document_id": "ΦΕΚ ...",
+  "publication_date": "YYYY-MM-DD",
+  "act_number": "...",
+  "act_year": "...",
+  "title": "...",
+  "preamble": [{"point": "1", "text": "..."}],
+  "body": [{"kind": "decision_block", "text": "..."}],
+  "signatures": [{"title": "...", "name": "..."}],
+  "amendments": [],
+  "metadata": {"confidence": 0.5}
+}
+Do not use markdown. Do not add any text before or after the JSON.
 
 TEXT:
 """.strip()
@@ -121,15 +129,24 @@ def _normalise_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         canonical = _FIELD_ALIASES.get(k, k)
         out[canonical] = v
 
-    # Handle migration from old 'sections' to new 'body' if model uses old schema
-    if "sections" in out and "body" not in out:
+    # Handle migration from old 'sections' to new 'body' and 'preamble' if model uses old schema
+    if "sections" in out and (not out.get("body") and not out.get("preamble")):
         out["body"] = []
+        out["preamble"] = []
+        in_preamble = False
         for sec in out["sections"]:
             if not isinstance(sec, dict): continue
             kind = sec.get("kind", "paragraph")
-            text = sec.get("text", "")
-            if kind == "heading" and "ΑΡΘΡΟ" in text.upper():
-                # Try to extract article number
+            text = str(sec.get("text", ""))
+
+            if "ΕΧΟΝΤΑΣ ΥΠΟΨΗ" in text.upper() or "ΈΧΟΝΤΑΣ ΥΠΌΨΗ" in text.upper():
+                in_preamble = True
+                continue
+
+            if in_preamble and re.match(r"^\d+[\.\)]", text):
+                out["preamble"].append({"point": text.split()[0], "text": text})
+            elif kind == "heading" and "ΑΡΘΡΟ" in text.upper():
+                in_preamble = False
                 m = re.search(r"ΑΡΘΡΟ\s+(\d+)", text, re.I)
                 num = m.group(1) if m else "1"
                 out["body"].append({"kind": "article", "number": num, "content": ""})
@@ -137,6 +154,16 @@ def _normalise_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
                 out["body"][-1]["content"] = text
             else:
                 out["body"].append({"kind": "decision_block", "text": text})
+
+    # Normalize signatures if they are just strings
+    if "signatures" in out:
+        normalized_sigs = []
+        for s in out["signatures"]:
+            if isinstance(s, str):
+                normalized_sigs.append({"title": "Υπογράφων", "name": s})
+            elif isinstance(s, dict):
+                normalized_sigs.append(s)
+        out["signatures"] = normalized_sigs
 
     return out
 
@@ -373,7 +400,7 @@ def _structure_chunk(
 
     prompt = (
         f"Normalize the following ΦΕΚ OCR text{context_hint} to the JSON schema. "
-        "Mark uncertain amendments with low confidence and question_for_human.\n\n"
+        "Ensure all preamble points and body content are extracted.\n\n"
         f"OCR TEXT:\n{chunk_text}"
     )
 
@@ -381,10 +408,19 @@ def _structure_chunk(
 
     try:
         data = _extract_json(result["raw"])
-        _fill_missing_keys(data)
+        # If input text was significant but output is sparse, it's a fail
+        if len(chunk_text) > 500:
+            has_content = len(data.get("preamble", [])) > 0 or len(data.get("body", [])) > 0
+            if not has_content:
+                raise ValueError("Model returned no preamble or body for significant input")
+            if data.get("title") == "Untitled" or data.get("document_id") == "unknown":
+                 # Maybe allow document_id to be unknown if it's a middle chunk, but title should probably be there
+                 pass
+
         _validate_llm_payload(data)
+        _fill_missing_keys(data)
         return data
-    except (ValueError, json.JSONDecodeError) as first_exc:
+    except (ValueError, json.JSONDecodeError, KeyError) as first_exc:
         if log_hook:
             log_hook(
                 "ai",
