@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from lxml import etree as ET
 
-from .model_manager import chat_json
+from .model_manager import chat_json, chat_raw
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 # Critical: small models (qwen2.5:3b, phi3:mini) tend to:
@@ -662,11 +662,8 @@ def _build_fek_cabinet_act_xml(data: Dict[str, Any]) -> str:
     """
     # Define namespaces
     XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
-    nsmap = {
-        None: None,  # Default namespace
-        "xsi": XSI_NS,
-    }
-    
+    nsmap = {"xsi": XSI_NS}
+
     root = ET.Element("EfimeridaKyverniseos", nsmap=nsmap)
     root.set("{" + XSI_NS + "}noNamespaceSchemaLocation", "fek.xsd")
 
@@ -1074,6 +1071,468 @@ def _esc(v: Any) -> str:
     )
 
 
+# ── XML-direct approach ───────────────────────────────────────────────────────
+
+XML_SYSTEM_PROMPT = """Είσαι ειδικός επεξεργαστής ελληνικών νομικών εγγράφων ΦΕΚ (Εφημερίδα της Κυβερνήσεως).
+
+ΚΡΙΣΙΜΟ: Εξάγαγε ΜΟΝΟ έγκυρο XML χωρίς markdown, χωρίς εξήγηση, χωρίς κώδικα ή περιγραφή. Μόνο το XML.
+
+ΚΑΝΟΝΕΣ:
+1. ΠΟΤΕ μη μεταφράζεις ελληνικό κείμενο στα αγγλικά.
+2. ΠΟΤΕ μη παραλείπεις κείμενο – εξάγαγε τα πάντα αυτούσια.
+3. Ημερομηνίες: YYYY-MM-DD (π.χ. "8 Ιανουαρίου 2026" → "2026-01-08").
+4. Teychos: εξάγεται από "ΤΕΥΧΟΣ Α'" ή "Τεύχος Α'" κ.λπ.
+5. ArithmosFyllou: εξάγεται από "Αρ. Φύλλου N".
+6. Praxi arithmos: εξάγεται από "Πράξη Νο N" ή "Πράξη N".
+7. Για Stoicheio με υπο-στοιχεία α, β, γ: χρησιμοποίησε <Lista><Peripton grammato="α">
+8. Για λίστα χωρίς γράμματα: <Lista><Peripton> (χωρίς grammato attribute)
+
+ΑΚΡΙΒΗΣ ΔΟΜΗ XML:
+<?xml version="1.0" encoding="UTF-8"?>
+<EfimeridaKyverniseos
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="fek.xsd">
+  <Metadata>
+    <Titlos>Εφημερίδα της Κυβερνήσεως της Ελληνικής Δημοκρατίας</Titlos>
+    <Teychos>Α'</Teychos>
+    <ArithmosFyllou>1</ArithmosFyllou>
+    <Hmerominia>2026-01-08</Hmerominia>
+  </Metadata>
+  <Periexomena>
+    <Kefalaio titlos="ΠΡΑΞΕΙΣ ΥΠΟΥΡΓΙΚΟΥ ΣΥΜΒΟΥΛΙΟΥ">
+      <Praxi arithmos="39" hmerominia="2025-12-23">
+        <Titlos>ΤΙΤΛΟΣ ΠΡΑΞΗΣ</Titlos>
+        <Organ>ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ</Organ>
+        <AitiolologikoMeros>
+          <Eisagogi>Έχοντας υπόψη:</Eisagogi>
+          <Stoicheio arithmos="1">
+            <Eisagogi>Τις διατάξεις:</Eisagogi>
+            <Lista>
+              <Peripton grammato="α">κείμενο α</Peripton>
+              <Peripton grammato="β">κείμενο β</Peripton>
+            </Lista>
+          </Stoicheio>
+          <Stoicheio arithmos="2">κείμενο στοιχείου 2</Stoicheio>
+        </AitiolologikoMeros>
+        <ApofasistikоMeros>
+          <Eisagogi>αποφασίζει:</Eisagogi>
+          <Arthro>κείμενο απόφασης</Arthro>
+          <DiataghDimosiefseos>Η παρούσα Πράξη να δημοσιευθεί στην Εφημερίδα της Κυβέρνησης.</DiataghDimosiefseos>
+        </ApofasistikоMeros>
+        <Ypografes>
+          <Prothypourgos>
+            <Onoma>ΟΝΟΜΑ ΠΡΩΘΥΠΟΥΡΓΟΥ</Onoma>
+          </Prothypourgos>
+          <MeliYpourgikoySymbouliou>
+            <Melos>ΟΝΟΜΑ ΜΕΛΟΥΣ</Melos>
+          </MeliYpourgikoySymbouliou>
+        </Ypografes>
+      </Praxi>
+    </Kefalaio>
+  </Periexomena>
+  <Epikoinonia>
+    <Dieuthinsi>διεύθυνση</Dieuthinsi>
+    <Tilefono>τηλέφωνο</Tilefono>
+    <HlektronikaDieuthinsi>url</HlektronikaDieuthinsi>
+  </Epikoinonia>
+</EfimeridaKyverniseos>
+""".strip()
+
+# Retry prompt for XML – skeleton only, simpler for small models
+XML_RETRY_PROMPT = """Εξάγαγε ΜΟΝΟ έγκυρο XML από το ακόλουθο κείμενο. Χωρίς markdown, χωρίς εξήγηση.
+
+Ελάχιστη δομή που πρέπει να ακολουθήσεις:
+<?xml version="1.0" encoding="UTF-8"?>
+<EfimeridaKyverniseos xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="fek.xsd">
+  <Metadata>
+    <Titlos>Εφημερίδα της Κυβερνήσεως της Ελληνικής Δημοκρατίας</Titlos>
+    <Teychos>[εξάγαγε]</Teychos>
+    <ArithmosFyllou>[εξάγαγε]</ArithmosFyllou>
+    <Hmerominia>[YYYY-MM-DD]</Hmerominia>
+  </Metadata>
+  <Periexomena>
+    <Kefalaio titlos="[τίτλος κεφαλαίου]">
+      <Praxi arithmos="[αριθμός]" hmerominia="[YYYY-MM-DD]">
+        <Titlos>[τίτλος πράξης]</Titlos>
+        <Organ>[φορέας]</Organ>
+        <AitiolologikoMeros>[αιτιολογικό]</AitiolologikoMeros>
+        <ApofasistikоMeros>[αποφασιστικό]</ApofasistikоMeros>
+      </Praxi>
+    </Kefalaio>
+  </Periexomena>
+</EfimeridaKyverniseos>
+
+ΚΕΙΜΕΝΟ:
+""".strip()
+
+
+def _extract_xml_from_llm(raw: str) -> str:
+    """
+    Extract valid ΦΕΚ XML from LLM output.
+    - Strips markdown fences if present.
+    - Finds <EfimeridaKyverniseos start.
+    - Returns the XML substring.
+    - Raises ValueError if not found.
+    """
+    text = raw.strip()
+    # Strip markdown fences
+    text = re.sub(r"^```(?:xml)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```\s*$", "", text)
+    text = text.strip()
+
+    start = text.find("<EfimeridaKyverniseos")
+    if start == -1:
+        raise ValueError("No <EfimeridaKyverniseos element found in LLM output")
+
+    # Find the matching closing tag
+    end = text.rfind("</EfimeridaKyverniseos>")
+    if end == -1:
+        raise ValueError("No </EfimeridaKyverniseos> closing tag found in LLM output")
+
+    xml_str = text[start : end + len("</EfimeridaKyverniseos>")]
+
+    # Ensure XML declaration is present
+    if not xml_str.startswith("<?xml"):
+        xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+
+    return xml_str
+
+
+def _validate_fek_xml(xml_str: str) -> None:
+    """
+    Validate that xml_str is a well-formed ΦΕΚ XML with required structure.
+    Raises ValueError with details if invalid.
+    """
+    try:
+        root = ET.fromstring(xml_str.encode("utf-8"))
+    except ET.XMLSyntaxError as e:
+        raise ValueError(f"XML parse error: {e}")
+
+    tag = root.tag
+    if tag != "EfimeridaKyverniseos":
+        raise ValueError(f"Root tag must be EfimeridaKyverniseos, got: {tag}")
+
+    if root.find("Metadata") is None:
+        raise ValueError("Missing required <Metadata> element")
+
+    if root.find("Periexomena") is None:
+        raise ValueError("Missing required <Periexomena> element")
+
+
+def _fallback_xml_from_regex(raw_text: str) -> str:
+    """Build a minimal valid ΦΕΚ XML skeleton using regex extraction from raw_text."""
+    text = _normalize_raw_text(raw_text)
+
+    issue = (
+        _extract_one(r"ΤΕΥΧΟΣ\s*([Α-Ωα-ω'']+)", text, flags=re.I)
+        or _extract_one(r"Τεύχος\s*([Α-Ωα-ω'']+)", text, flags=re.I)
+        or ""
+    )
+    issue_num = _extract_one(r"Αρ\.\s*Φύλλου\s*(\d+)", text, flags=re.I) or ""
+    pub_date_text = _extract_one(
+        r"(\d{1,2}\s+[Α-Ωα-ωΆΈΉΊΌΎΏάέήίόύώ]+\s+\d{4})", text, flags=re.I
+    )
+    pub_date = _format_greek_date(pub_date_text or "") or ""
+
+    title = (
+        _extract_one(
+            r"Πράξη\s+\d+.*?της\s+\d{2}[.-]\d{2}[.-]\d{4}\s*(.*?)\s+ΤΟ\s+ΥΠΟΥΡΓΙΚΟ",
+            text,
+            flags=re.I | re.S,
+        )
+        or _extract_one(r"ΘΕΜΑ:\s*(.*?)(?:\n|\.|$)", text, flags=re.I)
+        or "Άγνωστος τίτλος"
+    )
+
+    XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+    root_el = ET.Element("EfimeridaKyverniseos", nsmap={"xsi": XSI_NS})
+    root_el.set("{" + XSI_NS + "}noNamespaceSchemaLocation", "fek.xsd")
+
+    meta = ET.SubElement(root_el, "Metadata")
+    t = ET.SubElement(meta, "Titlos")
+    t.text = "Εφημερίδα της Κυβερνήσεως της Ελληνικής Δημοκρατίας"
+    ET.SubElement(meta, "Teychos").text = issue
+    ET.SubElement(meta, "ArithmosFyllou").text = issue_num
+    ET.SubElement(meta, "Hmerominia").text = pub_date
+
+    periexomena = ET.SubElement(root_el, "Periexomena")
+    kef = ET.SubElement(periexomena, "Kefalaio")
+    kef.set("titlos", "ΠΡΑΞΕΙΣ ΥΠΟΥΡΓΙΚΟΥ ΣΥΜΒΟΥΛΙΟΥ")
+    praxi = ET.SubElement(kef, "Praxi")
+    ET.SubElement(praxi, "Titlos").text = title.strip()
+    ET.SubElement(praxi, "Organ").text = "ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ"
+
+    return ET.tostring(
+        root_el, pretty_print=True, xml_declaration=True, encoding="utf-8"
+    ).decode("utf-8")
+
+
+def structure_to_xml(
+    raw_text: str,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> str:
+    """
+    Ask the LLM to output ΦΕΚ XML directly (no JSON intermediate).
+    Returns a valid XML string.  On total failure, returns a minimal skeleton.
+    """
+    prompt = (
+        "Εξάγαγε το ακόλουθο κείμενο ΦΕΚ στην ακριβή δομή XML που σου δόθηκε. "
+        "Εξάγαγε ΟΛΟ το κείμενο αυτούσιο. Μη μεταφράζεις.\n\n"
+        f"ΚΕΙΜΕΝΟ ΦΕΚ:\n{raw_text[:6000]}"
+    )
+
+    # First attempt
+    try:
+        result = chat_raw(prompt=prompt, system_prompt=XML_SYSTEM_PROMPT, log_hook=log_hook)
+        xml_str = _extract_xml_from_llm(result["raw"])
+        _validate_fek_xml(xml_str)
+        if log_hook:
+            log_hook("ai", f"structure_to_xml: first attempt succeeded, model={result.get('model')}")
+        return xml_str
+    except Exception as first_exc:
+        if log_hook:
+            log_hook("ai", f"structure_to_xml: first attempt failed ({first_exc}), retrying")
+
+    # Second attempt with simpler skeleton prompt
+    try:
+        retry_prompt = XML_RETRY_PROMPT + "\n" + raw_text[:4000]
+        result = chat_raw(prompt=retry_prompt, system_prompt=XML_SYSTEM_PROMPT, log_hook=log_hook)
+        xml_str = _extract_xml_from_llm(result["raw"])
+        _validate_fek_xml(xml_str)
+        if log_hook:
+            log_hook("ai", "structure_to_xml: retry succeeded")
+        return xml_str
+    except Exception as second_exc:
+        if log_hook:
+            log_hook("ai", f"structure_to_xml: retry also failed ({second_exc}), using regex fallback")
+
+    # Fallback: regex-based minimal skeleton
+    return _fallback_xml_from_regex(raw_text)
+
+
+def xml_to_html(xml_str: str) -> str:
+    """
+    Convert a ΦΕΚ XML string to clean Greek-styled HTML (official document look).
+    """
+    try:
+        root = ET.fromstring(xml_str.encode("utf-8"))
+    except Exception:
+        return f"<html><body><pre>{_esc(xml_str)}</pre></body></html>"
+
+    def _text(el, default: str = "") -> str:
+        return (el.text or "").strip() if el is not None else default
+
+    meta = root.find("Metadata")
+    titlos_meta = _text(meta.find("Titlos") if meta is not None else None, "ΦΕΚ")
+    teychos = _text(meta.find("Teychos") if meta is not None else None)
+    fyllo = _text(meta.find("ArithmosFyllou") if meta is not None else None)
+    hmerominia = _text(meta.find("Hmerominia") if meta is not None else None)
+
+    lines = [
+        "<!doctype html>",
+        "<html lang='el'>",
+        "<head>",
+        "<meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<title>ΦΕΚ</title>",
+        "<style>",
+        "  body { font-family: 'Times New Roman', Times, serif; max-width: 900px; margin: 0 auto; padding: 2em; color: #1a1a1a; background: #fff; }",
+        "  .header { text-align: center; border-bottom: 3px double #333; padding-bottom: 1em; margin-bottom: 1.5em; }",
+        "  .header h1 { font-size: 1.2em; margin: 0; letter-spacing: 0.05em; }",
+        "  .header .meta { font-size: 0.9em; margin-top: 0.5em; }",
+        "  .kefalaio-title { text-align: center; font-size: 1em; font-weight: bold; text-transform: uppercase; letter-spacing: 0.1em; margin: 1.5em 0 1em; }",
+        "  .praxi { margin: 1em 0; }",
+        "  .praxi-title { font-size: 1.1em; font-weight: bold; text-align: center; margin: 0.5em 0; }",
+        "  .organ { text-align: center; font-weight: bold; margin: 0.5em 0 1em; }",
+        "  .section-header { font-weight: bold; margin-top: 1.2em; margin-bottom: 0.4em; }",
+        "  .stoicheio { margin: 0.5em 0 0.5em 1.5em; }",
+        "  .stoicheio-num { font-weight: bold; }",
+        "  ul.peripton-list { margin: 0.3em 0 0.3em 2em; padding: 0; list-style: none; }",
+        "  ul.peripton-list li { margin: 0.2em 0; }",
+        "  ul.peripton-list li::before { content: attr(data-letter) ') '; font-weight: bold; }",
+        "  ul.peripton-list li.no-letter::before { content: '• '; }",
+        "  .arthro { margin: 0.5em 0 0.5em 1.5em; }",
+        "  .diatagh { font-style: italic; margin-top: 1em; }",
+        "  .ypografes { margin-top: 2em; border-top: 1px solid #888; padding-top: 1em; }",
+        "  .ypografes h3 { font-size: 1em; }",
+        "  .prothypourgos { font-weight: bold; }",
+        "  .meli-list { columns: 2; margin-top: 0.5em; }",
+        "  .melos { break-inside: avoid; margin: 0.2em 0; }",
+        "  .epikoinonia { margin-top: 2em; font-size: 0.85em; border-top: 1px solid #ccc; padding-top: 0.8em; color: #555; }",
+        "</style>",
+        "</head>",
+        "<body>",
+    ]
+
+    # Header
+    lines.append("<div class='header'>")
+    lines.append(f"<h1>{_esc(titlos_meta)}</h1>")
+    if teychos or fyllo or hmerominia:
+        lines.append(f"<div class='meta'>Τεύχος {_esc(teychos)} | Αρ. Φύλλου {_esc(fyllo)} | {_esc(hmerominia)}</div>")
+    lines.append("</div>")
+
+    periexomena = root.find("Periexomena")
+    if periexomena is not None:
+        for kef in periexomena.findall("Kefalaio"):
+            kef_titlos = kef.get("titlos", "")
+            if kef_titlos:
+                lines.append(f"<div class='kefalaio-title'>{_esc(kef_titlos)}</div>")
+
+            for praxi in kef.findall("Praxi"):
+                lines.append("<div class='praxi'>")
+                arithmos = praxi.get("arithmos", "")
+                hmer_praxi = praxi.get("hmerominia", "")
+                if arithmos or hmer_praxi:
+                    lines.append(f"<p style='text-align:center; font-size:0.9em;'>Πράξη {_esc(arithmos)} / {_esc(hmer_praxi)}</p>")
+
+                praxi_t = praxi.find("Titlos")
+                if praxi_t is not None:
+                    lines.append(f"<div class='praxi-title'>{_esc(_text(praxi_t))}</div>")
+
+                organ_el = praxi.find("Organ")
+                if organ_el is not None:
+                    lines.append(f"<div class='organ'>{_esc(_text(organ_el))}</div>")
+
+                # Aitiologiko Meros
+                ait = praxi.find("AitiolologikoMeros")
+                if ait is not None:
+                    lines.append("<div class='section-header'>")
+                    eisagogi_ait = ait.find("Eisagogi")
+                    lines.append(_esc(_text(eisagogi_ait, "Έχοντας υπόψη:")))
+                    lines.append("</div>")
+                    for stoicheio in ait.findall("Stoicheio"):
+                        ar = stoicheio.get("arithmos", "")
+                        lines.append(f"<div class='stoicheio'>")
+                        ei = stoicheio.find("Eisagogi")
+                        if ei is not None:
+                            lines.append(f"<span class='stoicheio-num'>{_esc(ar)}.</span> {_esc(_text(ei))}")
+                        elif stoicheio.text and stoicheio.text.strip():
+                            lines.append(f"<span class='stoicheio-num'>{_esc(ar)}.</span> {_esc(stoicheio.text.strip())}")
+                        else:
+                            lines.append(f"<span class='stoicheio-num'>{_esc(ar)}.</span>")
+
+                        lista = stoicheio.find("Lista")
+                        if lista is not None:
+                            lines.append("<ul class='peripton-list'>")
+                            for peripton in lista.findall("Peripton"):
+                                gram = peripton.get("grammato", "")
+                                if gram:
+                                    lines.append(f"<li data-letter='{_esc(gram)}'>{_esc(_text(peripton))}</li>")
+                                else:
+                                    lines.append(f"<li class='no-letter'>{_esc(_text(peripton))}</li>")
+                            lines.append("</ul>")
+                        lines.append("</div>")
+
+                # Apofasistiko Meros  (handle both Greek-letter and ASCII tag names)
+                apo = praxi.find("ApofasistikоMeros")
+                if apo is None:
+                    # fallback: search by local name in case of encoding variants
+                    for child in praxi:
+                        if "pofasistik" in child.tag.lower():
+                            apo = child
+                            break
+                if apo is not None:
+                    lines.append("<div class='section-header'>")
+                    eisagogi_apo = apo.find("Eisagogi")
+                    lines.append(_esc(_text(eisagogi_apo, "αποφασίζει:")))
+                    lines.append("</div>")
+                    for arthro in apo.findall("Arthro"):
+                        ar_num = arthro.get("arithmos", "")
+                        arthro_t = arthro.find("Titlos")
+                        arthro_k = arthro.find("Keimeno")
+                        text_body = _text(arthro_k) or _text(arthro)
+                        prefix = f"Άρθρο {_esc(ar_num)} " if ar_num else ""
+                        if arthro_t is not None:
+                            prefix += f"<em>{_esc(_text(arthro_t))}</em> "
+                        lines.append(f"<div class='arthro'>{prefix}{_esc(text_body)}</div>")
+                    diatagh = apo.find("DiataghDimosiefseos")
+                    if diatagh is not None:
+                        lines.append(f"<div class='diatagh'>{_esc(_text(diatagh))}</div>")
+
+                # Signatures
+                ypografes = praxi.find("Ypografes")
+                if ypografes is not None:
+                    lines.append("<div class='ypografes'>")
+                    lines.append("<h3>Υπογραφές</h3>")
+                    pro = ypografes.find("Prothypourgos")
+                    if pro is not None:
+                        onoma = pro.find("Onoma")
+                        lines.append(f"<p class='prothypourgos'>Ο Πρωθυπουργός<br>{_esc(_text(onoma))}</p>")
+                    meli_el = ypografes.find("MeliYpourgikoySymbouliou")
+                    if meli_el is not None:
+                        lines.append("<div class='meli-list'>")
+                        for melos in meli_el.findall("Melos"):
+                            lines.append(f"<div class='melos'>{_esc(_text(melos))}</div>")
+                        lines.append("</div>")
+                    lines.append("</div>")
+
+                lines.append("</div>")  # .praxi
+
+    # Epikoinonia
+    epik = root.find("Epikoinonia")
+    if epik is not None:
+        lines.append("<div class='epikoinonia'>")
+        dieuth = epik.find("Dieuthinsi")
+        if dieuth is not None:
+            lines.append(f"<p>{_esc(_text(dieuth))}</p>")
+        til = epik.find("Tilefono")
+        if til is not None:
+            lines.append(f"<p>Τηλ. {_esc(_text(til))}</p>")
+        url = epik.find("HlektronikaDieuthinsi")
+        if url is not None:
+            url_text = _text(url)
+            lines.append(f"<p><a href='{_esc(url_text)}'>{_esc(url_text)}</a></p>")
+        lines.append("</div>")
+
+    lines.append("</body></html>")
+    return "\n".join(lines)
+
+
+def _xml_to_minimal_dict(xml_str: str) -> Dict[str, Any]:
+    """
+    Parse a ΦΕΚ XML string into a minimal data dict compatible with
+    amendment detection and review logic.
+    """
+    try:
+        root = ET.fromstring(xml_str.encode("utf-8"))
+    except Exception:
+        return {
+            "document_type": "unknown",
+            "title": "",
+            "document_id": "unknown",
+            "publication_date": None,
+            "amendments": [],
+            "metadata": {"confidence": 0.5},
+        }
+
+    def _text(el, default: str = "") -> str:
+        return (el.text or "").strip() if el is not None else default
+
+    meta = root.find("Metadata")
+    teychos = _text(meta.find("Teychos") if meta is not None else None)
+    fyllo = _text(meta.find("ArithmosFyllou") if meta is not None else None)
+    hmerominia = _text(meta.find("Hmerominia") if meta is not None else None)
+
+    # Build document_id
+    doc_id = f"ΦΕΚ {teychos} {fyllo}" if (teychos or fyllo) else "unknown"
+
+    # Find first Praxi title
+    title = ""
+    praxi = root.find(".//Praxi")
+    if praxi is not None:
+        t = praxi.find("Titlos")
+        title = _text(t)
+
+    return {
+        "document_type": "cabinet_act",
+        "title": title,
+        "document_id": doc_id,
+        "publication_date": hmerominia or None,
+        "amendments": [],
+        "metadata": {"confidence": 0.8},
+    }
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 
@@ -1081,9 +1540,44 @@ def build_outputs(
     raw_text: str,
     log_hook: Optional[Callable[[str, str], None]] = None,
 ) -> StructuredOutput:
+    """
+    Main pipeline entry point.
+
+    New flow:
+      raw_text → structure_to_xml (LLM outputs XML directly)
+              → xml_to_html
+              → _xml_to_minimal_dict (for amendment/review logic)
+
+    The old JSON-based flow (structure_raw_text → to_xml → to_html) is preserved
+    as a last-resort fallback so existing tests/code paths keep working.
+    """
+    # ── New XML-direct path ────────────────────────────────────────────────────
+    try:
+        xml_text = structure_to_xml(raw_text, log_hook=log_hook)
+        html_text = xml_to_html(xml_text)
+        data = _xml_to_minimal_dict(xml_text)
+
+        review_questions: List[str] = []
+        for amend in data.get("amendments", []):
+            if (amend.get("confidence") or 0) < 0.75 and amend.get("question_for_human"):
+                review_questions.append(amend["question_for_human"])
+
+        needs_review = len(review_questions) > 0
+        return StructuredOutput(
+            data=data,
+            xml_text=xml_text,
+            html_text=html_text,
+            needs_review=needs_review,
+            review_questions=review_questions,
+        )
+    except Exception as xml_exc:
+        if log_hook:
+            log_hook("ai", f"build_outputs: XML-direct path failed ({xml_exc}), falling back to JSON path")
+
+    # ── Legacy JSON fallback path ─────────────────────────────────────────────
     data = structure_raw_text(raw_text, log_hook=log_hook)
 
-    review_questions: List[str] = []
+    review_questions = []
     for amend in data.get("amendments", []):
         if (amend.get("confidence") or 0) < 0.75 and amend.get("question_for_human"):
             review_questions.append(amend["question_for_human"])

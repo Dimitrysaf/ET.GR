@@ -357,6 +357,84 @@ def classify_image(
 # ── Main chat entry point ────────────────────────────────────────────────────
 
 
+def chat_raw(
+    prompt: str,
+    system_prompt: str,
+    temperature: float = 0.0,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> Dict:
+    """
+    Same as chat_json but WITHOUT format="json" — lets the model output any text (e.g. XML).
+    Returns a dict with keys: model, free_ram_gb, downgraded, reason, raw (str).
+    """
+    _start_ollama_server_if_needed(log_hook=log_hook)
+    client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
+    _ensure_local_model(client, log_hook=log_hook)
+
+    free_ram = round(get_free_ram_gb(), 2)
+    candidates = _candidate_models(client)
+
+    if not candidates:
+        raise RuntimeError("No local Ollama models available after auto-setup.")
+
+    errors: List[str] = []
+
+    for model_name in candidates:
+        profiles = [
+            (
+                "default",
+                {
+                    "temperature": temperature,
+                    "num_ctx": OLLAMA_NUM_CTX,
+                    "num_predict": OLLAMA_MAX_OUTPUT_TOKENS,
+                },
+            ),
+            (
+                "cpu_safe",
+                {
+                    "temperature": 0,
+                    "num_ctx": min(2048, OLLAMA_NUM_CTX),
+                    "num_predict": min(1024, OLLAMA_MAX_OUTPUT_TOKENS),
+                    "num_gpu": 0,
+                },
+            ),
+        ]
+
+        for profile_name, opts in profiles:
+            try:
+                _emit(
+                    log_hook,
+                    "ai",
+                    f"chat_raw attempt model={model_name} profile={profile_name}",
+                )
+                response = client.chat(
+                    model=model_name,
+                    options=opts,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                content = _response_content(response)
+                return {
+                    "model": model_name,
+                    "free_ram_gb": free_ram,
+                    "downgraded": model_name != candidates[0],
+                    "reason": f"used {model_name}({profile_name})",
+                    "raw": content,
+                }
+            except Exception as exc:
+                _emit(
+                    log_hook,
+                    "ai",
+                    f"chat_raw failed model={model_name} profile={profile_name} error={exc}",
+                )
+
+        errors.append(f"{model_name}: last error logged above")
+
+    raise RuntimeError("All candidate models failed: " + " | ".join(errors))
+
+
 def chat_json(
     prompt: str,
     system_prompt: str,
