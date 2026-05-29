@@ -48,6 +48,27 @@ def test_parse_insert():
     assert a.new_text == "Νέα παράγραφος.", repr(a.new_text)
 
 
+def test_parse_multiple_sentences_with_inner_period():
+    """Πολλές οδηγίες σε σειρά, καθεμία τελειώνει με τελεία ΜΕΣΑ στα «...».
+
+    Regression: ο splitter πρέπει να σπάει στο ".»", αλλιώς οι προτάσεις ενώνονται
+    και χάνονται/μπερδεύονται οι τροποποιήσεις (λάθος operation/νόμος).
+    """
+    s = (
+        "Η περ. β της παρ. 1 του άρθρου 9 του ν. 4622/2019 διαγράφεται. "
+        "Στο τέλος της παρ. 2 του άρθρου 7 του ν. 4622/2019 προστίθεται εδάφιο "
+        "ως εξής: «Νέο εδάφιο κειμένου.» "
+        "Το άρθρο 90 του π.δ. 63/2005 αντικαθίσταται ως εξής: «Αντικατάσταση.»"
+    )
+    res = parse_amendments(s)
+    assert len(res) == 3, [(a.operation, a.target_law_id, a.article) for a in res]
+    assert res[0].operation == "delete" and res[0].article == "9"
+    assert res[1].operation == "insert" and res[1].article == "7"
+    assert res[1].new_text == "Νέο εδάφιο κειμένου.", repr(res[1].new_text)
+    assert res[2].operation == "replace" and res[2].target_law_id == "π.δ. 63/2005"
+    assert res[2].new_text == "Αντικατάσταση.", repr(res[2].new_text)
+
+
 def test_claude_dormant_without_key():
     assert "ANTHROPIC_API_KEY" not in os.environ
     assert claude_parse_amendments("οτιδήποτε") is None

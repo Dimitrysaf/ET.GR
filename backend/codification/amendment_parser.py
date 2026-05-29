@@ -131,6 +131,12 @@ def _split_candidates(raw_text: str) -> List[str]:
         if depth == 0 and ch in "\n·;":
             spans.append("".join(buf).strip())
             buf = []
+        elif depth == 0 and ch == "»" and len(buf) >= 2 and buf[-2] == ".":
+            # Κλείσιμο εισαγωγικών μετά από τελεία (".»") = τέλος πρότασης.
+            # Η συνήθης μορφή ΦΕΚ βάζει την τελεία ΜΕΣΑ στα εισαγωγικά, οπότε
+            # δεν θα τη βρίσκαμε ποτέ ως όριο διαφορετικά.
+            spans.append("".join(buf).strip())
+            buf = []
         elif depth == 0 and ch == ".":
             # Σπάμε σε τελεία μόνο αν ΔΕΝ είναι συντομογραφία.
             if not _is_abbrev_dot(raw_text, i):
