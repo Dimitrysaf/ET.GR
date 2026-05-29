@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
@@ -20,7 +21,9 @@ def enqueue_review(item: Dict[str, Any]) -> str:
     ensure_review_dir()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     doc_id = item.get("document_id", "unknown")
-    filename = f"{timestamp}_{doc_id}.json"
+    # Αφαίρεση χαρακτήρων που δεν επιτρέπονται σε filenames (/, \, :, κ.λπ.)
+    safe_id = re.sub(r'[/\\:*?"<>|]', "-", doc_id)
+    filename = f"{timestamp}_{safe_id}.json"
     path = os.path.join(REVIEW_DIR, filename)
 
     payload = {

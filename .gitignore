@@ -13,3 +13,4 @@ data/output/html/*
 data/output/images/*
 data/output/xml/*
 data/review_queue/*
+.claude/
