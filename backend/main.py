@@ -344,28 +344,7 @@ async def process_pdf(pdf_path: str) -> Dict:
     await _log("info", "process_pdf", f"started file={filename}")
     await _event("start", f"Processing {filename}")
 
-    # ── Extract Images ──────────────────────────────────────
-    await _event("extract_images", "Extracting images from PDF")
-    extracted_images = extract_images_from_pdf(pdf_path)
-    
     loop = asyncio.get_running_loop()
-    
-    # ── Classify and OCR Images ─────────────────────────────
-    image_processed_content = {} # xref -> text or marker
-    pure_text_image_map = {} # xref -> text
-    
-    for i, img_info in enumerate(extracted_images):
-        await _event("ocr", f"Processing image {i+1}/{len(extracted_images)}", done=i, total=len(extracted_images))
-        
-        category = await asyncio.to_thread(classify_image, img_info["image_path"])
-        if category == "pure_text":
-            text = await asyncio.to_thread(ocr_image, img_info["image_path"])
-            image_processed_content[img_info["xref"]] = text
-            pure_text_image_map[img_info["xref"]] = text
-        else:
-            # Keep as image marker for later replacement in markdown
-            rel_path = os.path.relpath(img_info["image_path"], os.path.dirname(os.path.dirname(__file__)))
-            image_processed_content[img_info["xref"]] = f"![{category}](/{rel_path})"
 
     # ── Faithful raw extraction (NO AI restructuring) ──────────
     # Επίπεδο 1: εξάγουμε το ΦΕΚ αυτούσιο (verbatim) με τα υπάρχοντα

@@ -188,6 +188,17 @@ def extract_metadata(raw_text: str) -> Dict[str, Any]:
 
 # ── 3. Light archival XML ───────────────────────────────────────────────────────
 
+# XML 1.0 επιτρέπει μόνο: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+_XML_ILLEGAL = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff￾￿]"
+)
+
+
+def _sanitize_for_xml(text: str) -> str:
+    """Αφαιρεί χαρακτήρες που δεν επιτρέπονται σε XML 1.0 (π.χ. NULL, control chars από OCR)."""
+    return _XML_ILLEGAL.sub("�", text)
+
+
 def build_archive_xml(metadata: Dict[str, Any], raw_text: str) -> str:
     """
     Φτιάχνει ΕΛΑΦΡΥ, πιστό αρχειακό XML (ΟΧΙ το παλιό βαρύ structured schema).
@@ -213,9 +224,8 @@ def build_archive_xml(metadata: Dict[str, Any], raw_text: str) -> str:
     typos_el = ET.SubElement(metadata_el, "Typos")
     typos_el.text = metadata.get("document_type") or ""
 
-    # Το raw κείμενο αυτούσιο — οι newlines διατηρούνται ως κανονικό text node.
     keimeno_el = ET.SubElement(root, "Keimeno")
-    keimeno_el.text = raw_text
+    keimeno_el.text = _sanitize_for_xml(raw_text)
 
     return ET.tostring(
         root, pretty_print=True, xml_declaration=True, encoding="utf-8"
