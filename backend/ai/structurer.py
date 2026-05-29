@@ -278,8 +278,9 @@ def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # With OLLAMA_NUM_CTX=4096 we have room for ~2800 tokens of user text
 # (system prompt ≈ 350 tokens, JSON schema ≈ 200 tokens, safety margin ≈ 500).
 # 1 token ≈ 3.5 chars for Greek text → ~9800 chars per chunk.
-# We use 6000 as a balance between context size and output token limit.
-_MAX_CHARS_PER_CHUNK = 6000
+# We use 4000 to ensure the structured JSON output (which is larger than raw text)
+# fits within the model's output token limit (OLLAMA_MAX_OUTPUT_TOKENS).
+_MAX_CHARS_PER_CHUNK = 4000
 
 
 def _split_into_chunks(text: str) -> List[str]:

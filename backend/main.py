@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fitz
 import json
 import logging
 import os
@@ -227,7 +228,11 @@ async def process_pdf(pdf_path: str) -> Dict:
     # ── MarkItDown Conversion (Page by Page) ────────────────
     await _event("markitdown", "Converting PDF to Markdown using MarkItDown (page by page)")
 
-    md_converter = MarkItDown(docintel_endpoint=DOCINTEL_ENDPOINT)
+    if DOCINTEL_ENDPOINT:
+        md_converter = MarkItDown(docintel_endpoint=DOCINTEL_ENDPOINT)
+    else:
+        md_converter = MarkItDown()
+
     doc = fitz.open(pdf_path)
     merged_md_parts = []
 
