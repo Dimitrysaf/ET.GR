@@ -379,7 +379,7 @@ async def process_pdf(pdf_path: str) -> Dict:
 
     # ── Build light archival XML + HTML ─────────────────────────
     xml_text = build_archive_xml(metadata, raw_text)
-    html_text = build_archive_html(metadata, raw_text)
+    html_text = build_archive_html(metadata, raw_text, images_url_prefix="/data/output/images")
 
     # ── Save outputs ────────────────────────────────────────────
     paths = output_paths(doc_id)

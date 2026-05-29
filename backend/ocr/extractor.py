@@ -89,13 +89,18 @@ def extract_text_layer(
             image_placeholders.append((fitz.Rect(img_rect), placeholder))
 
     # 2. Εντοπισμός tables ────────────────────────────────────────────────────
+    # Φίλτρο: τουλάχιστον 2 στήλες ΚΑΙ 2 γραμμές για να αποφύγουμε
+    # false-positives από double-column text ή πίνακες περιεχομένων.
     table_placeholders: List[Tuple[fitz.Rect, str]] = []
 
     try:
         tabs = page.find_tables()
         for table in tabs.tables:
+            if table.col_count < 2 or table.row_count < 2:
+                continue
             md = _table_to_markdown(table)
-            table_placeholders.append((fitz.Rect(table.bbox), md))
+            if md:
+                table_placeholders.append((fitz.Rect(table.bbox), md))
     except Exception:
         pass  # find_tables μπορεί να μην υπάρχει σε παλαιότερες εκδόσεις PyMuPDF
 
