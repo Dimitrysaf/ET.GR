@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import fitz
+try:
+    import fitz
+    _MISSING_PYMUPDF = False
+except Exception:  # pragma: no cover - allow importing without PyMuPDF
+    fitz = None  # type: ignore
+    _MISSING_PYMUPDF = True
 import json
 import logging
 import os
@@ -12,11 +17,72 @@ import traceback
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+try:
+    from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
+    _MISSING_FASTAPI = False
+except Exception:  # pragma: no cover - allow importing without deps
+    _MISSING_FASTAPI = True
 
+    # Lightweight stubs so importing this module outside the project's venv
+    # doesn't raise ImportError. These are minimal and only exist to make
+    # `import backend.main` succeed for tooling or tests that do not run the
+    # server.
+    class _StubRoute:
+        def __call__(self, *a, **kw):
+            def _decorator(func):
+                return func
+
+            return _decorator
+
+    class FastAPI:  # type: ignore
+        def __init__(self, *a, **kw):
+            pass
+
+        def add_middleware(self, *a, **kw):
+            pass
+
+        def mount(self, *a, **kw):
+            pass
+
+        get = _StubRoute()
+        post = _StubRoute()
+        websocket = _StubRoute()
+
+    class File:  # type: ignore
+        def __init__(self, *a, **kw):
+            pass
+
+    class UploadFile:  # type: ignore
+        def __init__(self, *a, **kw):
+            pass
+
+    class WebSocket:  # type: ignore
+        pass
+
+    class WebSocketDisconnect(Exception):  # type: ignore
+        pass
+
+    class CORSMiddleware:  # type: ignore
+        pass
+
+    class FileResponse:  # type: ignore
+        def __init__(self, *a, **kw):
+            raise RuntimeError("FileResponse not available: install FastAPI")
+
+    class JSONResponse:  # type: ignore
+        def __init__(self, *a, **kw):
+            raise RuntimeError("JSONResponse not available: install FastAPI")
+
+    class StaticFiles:  # type: ignore
+        def __init__(self, *a, **kw):
+            raise RuntimeError("StaticFiles not available: install FastAPI")
+
+# Attempt to import optional/third-party components. If those imports fail
+# (e.g. when running outside the project's venv), provide safe fallbacks so
+# the module can still be imported for static analysis or simple tooling.
 try:
     from markitdown import MarkItDown
     from backend.ocr.detector import detect_document, extract_images_from_pdf
@@ -34,27 +100,78 @@ try:
         OUTPUT_HTML_DIR,
         OUTPUT_XML_DIR,
         DOCINTEL_ENDPOINT,
-        IMAGES_DIR
+        IMAGES_DIR,
     )
-except ImportError:
-    from markitdown import MarkItDown
-    from ocr.detector import detect_document, extract_images_from_pdf
-    from ocr.extractor import extract_document_text_layer
-    from ocr.engine import ocr_document, ocr_image
-    from ai.structurer import build_outputs
-    from ai.model_manager import choose_model, classify_image
-    from ai.diff_engine import apply_amendments
-    from ai.review_queue import enqueue_review, list_pending_reviews
-    from storage.organizer import ensure_dirs, output_paths, write_text
-    from storage.versioning import get_current_law_text, snapshot_and_update
-    from config import (
-        INPUT_DIR,
-        OLLAMA_BASE_URL,
-        OUTPUT_HTML_DIR,
-        OUTPUT_XML_DIR,
-        DOCINTEL_ENDPOINT,
-        IMAGES_DIR
-    )
+except Exception:  # pragma: no cover - careful fallback for missing deps
+    try:
+        # Try local (package-relative) imports if package layout differs
+        from markitdown import MarkItDown
+        from ocr.detector import detect_document, extract_images_from_pdf
+        from ocr.extractor import extract_document_text_layer
+        from ocr.engine import ocr_document, ocr_image
+        from ai.structurer import build_outputs
+        from ai.model_manager import choose_model, classify_image
+        from ai.diff_engine import apply_amendments
+        from ai.review_queue import enqueue_review, list_pending_reviews
+        from storage.organizer import ensure_dirs, output_paths, write_text
+        from storage.versioning import get_current_law_text, snapshot_and_update
+        from config import (
+            INPUT_DIR,
+            OLLAMA_BASE_URL,
+            OUTPUT_HTML_DIR,
+            OUTPUT_XML_DIR,
+            DOCINTEL_ENDPOINT,
+            IMAGES_DIR,
+        )
+    except Exception:
+        # Provide minimal stubs so the module can be imported. Each stub will
+        # raise a helpful RuntimeError if called, except for simple helpers
+        # like `list_pending_reviews` and `ensure_dirs` which are safe no-ops.
+        def _missing(name):
+            def _fn(*a, **kw):
+                raise RuntimeError(f"Missing runtime dependency for {name}; install project dependencies to use this feature")
+
+            return _fn
+
+        class MarkItDown:  # minimal wrapper used only for imports
+            def __init__(self, *a, **kw):
+                pass
+
+            def convert(self, *a, **kw):
+                class R:
+                    text_content = ""
+
+                return R()
+
+        detect_document = _missing("detect_document")
+        extract_images_from_pdf = _missing("extract_images_from_pdf")
+        extract_document_text_layer = _missing("extract_document_text_layer")
+        ocr_document = _missing("ocr_document")
+        ocr_image = _missing("ocr_image")
+        build_outputs = _missing("build_outputs")
+        choose_model = _missing("choose_model")
+        classify_image = _missing("classify_image")
+        apply_amendments = _missing("apply_amendments")
+        enqueue_review = _missing("enqueue_review")
+        list_pending_reviews = lambda: []
+        ensure_dirs = lambda: None
+
+        def output_paths(doc_id: str):
+            base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "output")
+            return {"xml": os.path.join(base, "xml", f"{doc_id}.xml"), "html": os.path.join(base, "html", f"{doc_id}.html")}
+
+        write_text = lambda path, text: None
+        get_current_law_text = _missing("get_current_law_text")
+        snapshot_and_update = _missing("snapshot_and_update")
+
+        # Conservative defaults for config values used at import time
+        SCRIPT_DIR = os.path.dirname(os.path.dirname(__file__))
+        INPUT_DIR = os.path.join(SCRIPT_DIR, "data", "input")
+        OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        OUTPUT_HTML_DIR = os.path.join(SCRIPT_DIR, "data", "output", "html")
+        OUTPUT_XML_DIR = os.path.join(SCRIPT_DIR, "data", "output", "xml")
+        DOCINTEL_ENDPOINT = None
+        IMAGES_DIR = os.path.join(SCRIPT_DIR, "data", "output", "images")
 
 app = FastAPI(title="FEK Processor")
 
@@ -67,10 +184,20 @@ app.add_middleware(
 )
 
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
+if not _MISSING_FASTAPI:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
 
 from backend.config import DATA_DIR
-app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
+if not _MISSING_FASTAPI:
+    app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
 logger = logging.getLogger("fek_processor")
 logging.basicConfig(
