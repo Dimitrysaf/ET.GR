@@ -135,11 +135,11 @@
         </div>
     </footer>
 
-    <script type="module" src="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.js"></script>
-    <script type="module">
-        import { initAll } from 'https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.js'
-        initAll();
-        window.initAll = initAll;
+    <script src="https://cdn.jsdelivr.net/npm/govuk-frontend@5.6.0/dist/govuk/govuk-frontend.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            window.GOVUKFrontend.initAll();
+        });
     </script>
     <script>
         let ws = null;
