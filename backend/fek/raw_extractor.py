@@ -234,10 +234,84 @@ def _esc(v: Any) -> str:
     )
 
 
-def build_archive_html(metadata: Dict[str, Any], raw_text: str) -> str:
+def _raw_text_to_html_body(raw_text: str, images_url_prefix: str = "images") -> str:
     """
-    Απλό, αναγνώσιμο HTML: header με metadata + raw κείμενο σε <pre>
-    (διατηρεί το formatting). Ελληνική serif τυπογραφία, inline CSS. Πιστό.
+    Μετατρέπει raw text σε HTML body content:
+    - [ΕΙΚΟΝΑ: fname.png] → <img src="images/fname.png">
+    - Markdown tables (| ... |) → <table>
+    - Υπόλοιπο κείμενο → <pre>
+    """
+    import re
+
+    # Split σε "chunks" ανά placeholder/table/text
+    chunks = []
+    remaining = raw_text
+
+    # Regex: image placeholder ή markdown table block ή plain text
+    pattern = re.compile(
+        r"(\[ΕΙΚΟΝΑ:\s*([^\]]+)\])"           # group 1/2: image
+        r"|(\n?\|.+\|(?:\n\|.+\|)*)",         # group 3: markdown table
+        re.DOTALL,
+    )
+
+    last = 0
+    for m in pattern.finditer(remaining):
+        # text πριν το match
+        before = remaining[last:m.start()]
+        if before.strip():
+            chunks.append(("text", before))
+
+        if m.group(1):  # ΕΙΚΟΝΑ
+            fname = m.group(2).strip()
+            chunks.append(("image", fname))
+        elif m.group(3):  # table
+            chunks.append(("table", m.group(3).strip()))
+
+        last = m.end()
+
+    tail = remaining[last:]
+    if tail.strip():
+        chunks.append(("text", tail))
+
+    html_parts = []
+    for kind, content in chunks:
+        if kind == "text":
+            html_parts.append(f'<pre class="keimeno">{_esc(content)}</pre>')
+        elif kind == "image":
+            src = f"{images_url_prefix}/{_esc(content)}"
+            alt = _esc(content)
+            html_parts.append(
+                f'<figure class="fek-image">'
+                f'<img src="{src}" alt="{alt}" style="max-width:100%;">'
+                f'<figcaption>{alt}</figcaption></figure>'
+            )
+        elif kind == "table":
+            html_parts.append(_markdown_table_to_html(content))
+
+    return "\n".join(html_parts)
+
+
+def _markdown_table_to_html(md: str) -> str:
+    """Μετατρέπει Markdown table σε HTML <table>."""
+    import re
+    rows = [line.strip() for line in md.strip().splitlines() if line.strip()]
+    html = ['<table class="fek-table" border="1" cellpadding="4" cellspacing="0">']
+    for i, row in enumerate(rows):
+        if re.match(r"^\|[\s\-|]+\|$", row):
+            continue  # separator row
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        tag = "th" if i == 0 else "td"
+        html.append("  <tr>" + "".join(f"<{tag}>{_esc(c)}</{tag}>" for c in cells) + "</tr>")
+    html.append("</table>")
+    return "\n".join(html)
+
+
+def build_archive_html(metadata: Dict[str, Any], raw_text: str, images_url_prefix: str = "images") -> str:
+    """
+    Απλό, αναγνώσιμο HTML: header με metadata + raw κείμενο.
+    - [ΕΙΚΟΝΑ: fname] → <img>
+    - Markdown tables → <table>
+    - Υπόλοιπο → <pre> (διατηρεί formatting). Ελληνική serif τυπογραφία.
     """
     titlos = metadata.get("titlos") or "ΦΕΚ"
     rows = [
@@ -251,6 +325,8 @@ def build_archive_html(metadata: Dict[str, Any], raw_text: str) -> str:
         f"<td>{_esc(value or '')}</td></tr>"
         for label, value in rows
     )
+
+    body_content = _raw_text_to_html_body(raw_text, images_url_prefix)
 
     return f"""<!doctype html>
 <html lang="el">
@@ -267,6 +343,10 @@ def build_archive_html(metadata: Dict[str, Any], raw_text: str) -> str:
   pre.keimeno {{ white-space: pre-wrap; word-wrap: break-word;
                  font-family: 'GFS Didot', 'Times New Roman', Georgia, serif;
                  font-size: 1.05em; }}
+  table.fek-table {{ border-collapse: collapse; width: 100%; margin: 1em 0;
+                     font-size: 0.95em; }}
+  figure.fek-image {{ text-align: center; margin: 1.5em 0; }}
+  figure.fek-image figcaption {{ font-size: 0.8em; color: #666; margin-top: 0.3em; }}
 </style>
 </head>
 <body>
@@ -276,6 +356,8 @@ def build_archive_html(metadata: Dict[str, Any], raw_text: str) -> str:
 {meta_rows}
     </table>
   </header>
-  <pre class="keimeno">{_esc(raw_text)}</pre>
+  <main>
+{body_content}
+  </main>
 </body>
 </html>"""
