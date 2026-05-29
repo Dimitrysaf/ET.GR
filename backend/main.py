@@ -23,10 +23,15 @@ try:
     from backend.ai.structurer import build_outputs
     from backend.ai.model_manager import choose_model
     from backend.ai.diff_engine import apply_amendments
-    from backend.ai.review_queue import enqueue_review
+    from backend.ai.review_queue import enqueue_review, list_pending_reviews
     from backend.storage.organizer import ensure_dirs, output_paths, write_text
     from backend.storage.versioning import get_current_law_text, snapshot_and_update
-    from backend.config import INPUT_DIR, OLLAMA_BASE_URL
+    from backend.config import (
+        INPUT_DIR,
+        OLLAMA_BASE_URL,
+        OUTPUT_HTML_DIR,
+        OUTPUT_XML_DIR,
+    )
 except ImportError:
     from ocr.detector import detect_document
     from ocr.extractor import extract_document_text_layer
@@ -34,10 +39,10 @@ except ImportError:
     from ai.structurer import build_outputs
     from ai.model_manager import choose_model
     from ai.diff_engine import apply_amendments
-    from ai.review_queue import enqueue_review
+    from ai.review_queue import enqueue_review, list_pending_reviews
     from storage.organizer import ensure_dirs, output_paths, write_text
     from storage.versioning import get_current_law_text, snapshot_and_update
-    from config import INPUT_DIR, OLLAMA_BASE_URL
+    from config import INPUT_DIR, OLLAMA_BASE_URL, OUTPUT_HTML_DIR, OUTPUT_XML_DIR
 
 app = FastAPI(title="FEK Processor")
 
@@ -123,6 +128,56 @@ async def ws_endpoint(ws: WebSocket):
         ws_manager.disconnect(ws)
 
 
+@app.get("/outputs")
+async def list_outputs():
+    """List all processed output files."""
+    ensure_dirs()
+    results = []
+    html_dir = OUTPUT_HTML_DIR
+    xml_dir = OUTPUT_XML_DIR
+
+    if os.path.isdir(html_dir):
+        for name in sorted(os.listdir(html_dir)):
+            if name.endswith(".html"):
+                base = name[:-5]
+                xml_path = os.path.join(xml_dir, f"{base}.xml")
+                results.append(
+                    {
+                        "id": base,
+                        "html_url": f"/outputs/html/{name}",
+                        "xml_url": (
+                            f"/outputs/xml/{base}.xml"
+                            if os.path.exists(xml_path)
+                            else None
+                        ),
+                    }
+                )
+    return JSONResponse({"outputs": results})
+
+
+@app.get("/outputs/html/{filename}")
+async def get_html_output(filename: str):
+    path = os.path.join(OUTPUT_HTML_DIR, filename)
+    if not os.path.exists(path) or not filename.endswith(".html"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/outputs/xml/{filename}")
+async def get_xml_output(filename: str):
+    path = os.path.join(OUTPUT_XML_DIR, filename)
+    if not os.path.exists(path) or not filename.endswith(".xml"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, media_type="application/xml")
+
+
+@app.get("/review-queue")
+async def get_review_queue():
+    """Return all pending items in the human review queue."""
+    items = list_pending_reviews()
+    return JSONResponse({"pending": len(items), "items": items})
+
+
 # ── PDF processing pipeline ───────────────────────────────────────────────────
 
 
@@ -142,12 +197,16 @@ async def process_pdf(pdf_path: str) -> Dict:
     await _event("extract", "Text-layer extraction finished")
 
     # ── OCR scanned pages ────────────────────────────────────
+    # NOTE: progress_callback signature is (done, total, page_num)
+    loop = asyncio.get_running_loop()
+
     def progress(done: int, total: int, page_num: int):
-        asyncio.create_task(
-            _event("ocr", f"OCR page {page_num}", done=done, total=total)
+        asyncio.run_coroutine_threadsafe(
+            _event("ocr", f"OCR page {page_num}", done=done, total=total),
+            loop,
         )
 
-    ocr_pages = ocr_document(pdf_path, page_infos, progress_callback=progress)
+    ocr_pages = await asyncio.to_thread(ocr_document, pdf_path, page_infos, progress)
     ocr_map = {item["page_num"]: item["text"] for item in ocr_pages}
 
     # ── Merge text ───────────────────────────────────────────
@@ -161,8 +220,6 @@ async def process_pdf(pdf_path: str) -> Dict:
     await _event("merge", "Raw text merged", chars=len(raw_text))
 
     # ── AI structuring ───────────────────────────────────────
-    loop = asyncio.get_running_loop()
-
     def ai_log(source: str, message: str) -> None:
         logger.info("%s %s", source, message)
         asyncio.run_coroutine_threadsafe(_log("info", source, message), loop)
@@ -178,6 +235,7 @@ async def process_pdf(pdf_path: str) -> Dict:
     )
 
     structured = await asyncio.to_thread(build_outputs, raw_text, ai_log)
+    chunks_processed = structured.data.get("metadata", {}).get("chunks_processed", 1)
     await _event(
         "ai",
         "AI structuring completed",
@@ -185,6 +243,7 @@ async def process_pdf(pdf_path: str) -> Dict:
         title=structured.data.get("title"),
         ai_mode=structured.data.get("metadata", {}).get("ai_mode"),
         model=structured.data.get("metadata", {}).get("model"),
+        chunks_processed=chunks_processed,
         ai_preview=structured.html_text[:1500],
     )
 
@@ -193,7 +252,14 @@ async def process_pdf(pdf_path: str) -> Dict:
     paths = output_paths(doc_id)
     write_text(paths["xml"], structured.xml_text)
     write_text(paths["html"], structured.html_text)
-    await _event("save", "XML/HTML saved", xml=paths["xml"], html=paths["html"])
+    await _event(
+        "save",
+        "XML/HTML saved",
+        xml=paths["xml"],
+        html=paths["html"],
+        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
+        xml_url=f"/outputs/xml/{os.path.basename(paths['xml'])}",
+    )
 
     # ── Apply amendments ─────────────────────────────────────
     amendment_notes: List[str] = []
@@ -242,12 +308,19 @@ async def process_pdf(pdf_path: str) -> Dict:
             question_count=len(structured.review_questions) + len(amendment_notes),
         )
 
-    await _event("done", f"Finished {filename}", document_id=doc_id)
+    await _event(
+        "done",
+        f"Finished {filename}",
+        document_id=doc_id,
+        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
+    )
     return {
         "document_id": doc_id,
         "title": structured.data.get("title"),
         "xml": paths["xml"],
         "html": paths["html"],
+        "html_url": f"/outputs/html/{os.path.basename(paths['html'])}",
+        "xml_url": f"/outputs/xml/{os.path.basename(paths['xml'])}",
         "needs_review": structured.needs_review or bool(amendment_notes),
     }
 
@@ -290,10 +363,7 @@ async def process(files: List[UploadFile] = File(...)):
 
 @app.post("/ai/purge")
 async def ai_purge():
-    """
-    Gracefully stop Ollama model sessions, remove local models, kill the server.
-    Works with both old (dict) and new (object) ollama-python APIs.
-    """
+    """Gracefully stop Ollama model sessions, remove local models, kill the server."""
     import ollama as _ollama
 
     removed: List[str] = []
@@ -304,15 +374,14 @@ async def ai_purge():
     try:
         client = _ollama.Client(host=OLLAMA_BASE_URL, timeout=10)
 
-        # ── Stop running models ──────────────────────────────
+        # Stop running models
         try:
             ps_resp = client.ps()
-            # Handle both dict and object responses
-            if isinstance(ps_resp, dict):
-                active_items = ps_resp.get("models", [])
-            else:
-                active_items = list(getattr(ps_resp, "models", None) or [])
-
+            active_items = (
+                ps_resp.get("models", [])
+                if isinstance(ps_resp, dict)
+                else list(getattr(ps_resp, "models", None) or [])
+            )
             for item in active_items:
                 name = (
                     item.get("model") or item.get("name")
@@ -322,7 +391,6 @@ async def ai_purge():
                 if not name:
                     continue
                 try:
-                    # client.stop() may not exist in all versions – try it
                     stop_fn = getattr(client, "stop", None)
                     if stop_fn:
                         stop_fn(name)
@@ -330,17 +398,16 @@ async def ai_purge():
                 except Exception as exc:
                     errors.append(f"stop {name}: {exc}")
         except Exception as exc:
-            # ps() might not be implemented; not fatal
             await _log("warning", "ai_purge", f"ps() unavailable: {exc}")
 
-        # ── Delete local models ──────────────────────────────
+        # Delete local models
         try:
             list_resp = client.list()
-            if isinstance(list_resp, dict):
-                model_items = list_resp.get("models", [])
-            else:
-                model_items = list(getattr(list_resp, "models", None) or [])
-
+            model_items = (
+                list_resp.get("models", [])
+                if isinstance(list_resp, dict)
+                else list(getattr(list_resp, "models", None) or [])
+            )
             for item in model_items:
                 name = (
                     item.get("model") or item.get("name")
@@ -363,13 +430,12 @@ async def ai_purge():
         errors.append(f"client init: {exc}")
         await _log("warning", "ai_purge", f"could not connect to Ollama: {exc}")
 
-    # ── Kill ollama serve ────────────────────────────────────
+    # Kill ollama serve
     try:
         subprocess.run(["pkill", "-f", "ollama serve"], check=False)
         await _log("info", "ai_purge", "ollama serve process terminated")
     except Exception as exc:
         errors.append(f"pkill: {exc}")
-        await _log("error", "ai_purge", f"pkill failed: {exc}")
 
     await _event(
         "ai_purge",

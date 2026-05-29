@@ -1,135 +1,768 @@
 <!doctype html>
-<html>
+<html lang="el">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FEK Processor</title>
+  <title>ΦΕΚ Processor</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      background: #f5f5f0;
+      color: #222;
+    }
+
+    header {
+      background: #1a3a5c;
+      color: #fff;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    header small {
+      opacity: .7;
+      font-size: 12px;
+    }
+
+    .ws-badge {
+      margin-left: auto;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      background: #c0392b;
+      color: #fff;
+      transition: background .3s;
+    }
+
+    .ws-badge.connected {
+      background: #27ae60;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      grid-template-rows: auto 1fr;
+      height: calc(100vh - 48px);
+    }
+
+    /* ── Left panel ── */
+    .left {
+      grid-row: 1 / 3;
+      background: #fff;
+      border-right: 1px solid #ddd;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .upload-section {
+      padding: 16px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .upload-section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 8px;
+    }
+
+    .drop-zone {
+      border: 2px dashed #aaa;
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      color: #888;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      margin-bottom: 10px;
+    }
+
+    .drop-zone:hover,
+    .drop-zone.dragover {
+      border-color: #1a3a5c;
+      background: #f0f4f8;
+      color: #1a3a5c;
+    }
+
+    .drop-zone input {
+      display: none;
+    }
+
+    .drop-zone .icon {
+      font-size: 28px;
+      margin-bottom: 6px;
+    }
+
+    .file-list {
+      margin-top: 8px;
+    }
+
+    .file-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 8px;
+      background: #f0f4f8;
+      border-radius: 4px;
+      margin-top: 4px;
+      font-size: 12px;
+    }
+
+    .file-item .fname {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-item .fsize {
+      color: #888;
+      margin-left: 8px;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 9px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+
+    .btn:hover {
+      opacity: .85;
+    }
+
+    .btn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: #1a3a5c;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+
+    .btn-danger {
+      background: #c0392b;
+      color: #fff;
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #eee;
+      background: #fafafa;
+      flex-shrink: 0;
+    }
+
+    .tab {
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      color: #666;
+      white-space: nowrap;
+    }
+
+    .tab.active {
+      border-bottom-color: #1a3a5c;
+      color: #1a3a5c;
+    }
+
+    .tab-badge {
+      display: inline-block;
+      background: #c0392b;
+      color: #fff;
+      border-radius: 8px;
+      font-size: 10px;
+      padding: 0 5px;
+      margin-left: 4px;
+    }
+
+    /* ── Log panels ── */
+    .log-panels {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .log-panel {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+      padding: 10px;
+      font-family: 'Menlo', 'Consolas', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      display: none;
+    }
+
+    .log-panel.active {
+      display: block;
+    }
+
+    .log-line {
+      padding: 1px 0;
+    }
+
+    .log-line.error {
+      color: #c0392b;
+    }
+
+    .log-line.warn {
+      color: #e67e22;
+    }
+
+    .log-line.info {
+      color: #27ae60;
+    }
+
+    .log-line.stage {
+      color: #1a3a5c;
+      font-weight: 600;
+    }
+
+    /* ── Right panel ── */
+    .right {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .right-tabs {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      background: #fff;
+      padding: 0 12px;
+      flex-shrink: 0;
+    }
+
+    .output-area {
+      flex: 1;
+      overflow: hidden;
+      background: #fff;
+      position: relative;
+    }
+
+    .output-panel {
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      display: none;
+      padding: 16px;
+    }
+
+    .output-panel.active {
+      display: block;
+    }
+
+    /* Preview iframe */
+    #preview-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    /* Output list */
+    .output-list {
+      max-width: 700px;
+    }
+
+    .output-card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      background: #fafafa;
+    }
+
+    .output-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .output-card .links a {
+      display: inline-block;
+      margin-right: 10px;
+      font-size: 12px;
+      color: #1a3a5c;
+      text-decoration: none;
+      padding: 3px 8px;
+      border: 1px solid #1a3a5c;
+      border-radius: 4px;
+    }
+
+    .output-card .links a:hover {
+      background: #1a3a5c;
+      color: #fff;
+    }
+
+    /* Review queue */
+    .review-card {
+      border-left: 4px solid #e67e22;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      background: #fffbf5;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .review-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .review-card .meta {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .review-card ul {
+      padding-left: 18px;
+      font-size: 12px;
+      color: #555;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: #aaa;
+      padding: 40px;
+      font-size: 13px;
+    }
+
+    /* Progress bar */
+    .progress-bar-wrap {
+      height: 3px;
+      background: #eee;
+      flex-shrink: 0;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: #1a3a5c;
+      width: 0%;
+      transition: width .3s;
+    }
+
+    /* Status line */
+    .status-line {
+      padding: 6px 12px;
+      font-size: 11px;
+      color: #666;
+      background: #fafafa;
+      border-top: 1px solid #eee;
+      flex-shrink: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
 </head>
+
 <body>
-  <h1>FEK OCR + AI Pipeline</h1>
 
-  <form id="uploadForm">
-    <label for="files">PDF files:</label>
-    <input id="files" name="files" type="file" accept="application/pdf" multiple required>
-    <button type="submit">Start Processing</button>
-    <button type="button" id="purgeAiBtn">Stop & Purge AI</button>
-  </form>
+  <header>
+    <div>
+      <h1>ΦΕΚ Processor</h1>
+      <small>OCR + AI structuring pipeline</small>
+    </div>
+    <span class="ws-badge" id="wsBadge">● Αποσυνδεδεμένο</span>
+  </header>
 
-  <h2>Progress</h2>
-  <pre id="progress"></pre>
+  <div class="layout">
 
-  <h2>Raw Logs</h2>
-  <pre id="rawLogs"></pre>
+    <!-- ── Left panel: upload + logs ── -->
+    <div class="left">
+      <div class="upload-section">
+        <h2>ΕΠΕΞΕΡΓΑΣΙΑ PDF</h2>
+        <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" accept="application/pdf" multiple>
+          <div class="icon">📄</div>
+          <div>Σύρε ΦΕΚ PDF εδώ ή <strong>κλικ</strong> για επιλογή</div>
+        </div>
+        <div class="file-list" id="fileList"></div>
+        <button class="btn btn-primary" id="processBtn" disabled>▶ Επεξεργασία</button>
+        <button class="btn btn-danger" id="purgeBtn">⛔ Διαγραφή AI</button>
+      </div>
 
-  <h2>Live AI Output Preview</h2>
-  <pre id="preview"></pre>
+      <div class="tabs">
+        <div class="tab active" data-tab="progress">Πρόοδος</div>
+        <div class="tab" data-tab="ailog">AI</div>
+        <div class="tab" data-tab="rawlog">Logs</div>
+        <div class="tab" data-tab="errors">Σφάλματα <span class="tab-badge" id="errBadge" style="display:none">0</span>
+        </div>
+      </div>
 
-  <h2>AI Execution</h2>
-  <pre id="aiLog"></pre>
+      <div class="log-panels">
+        <div class="log-panel active" id="tab-progress"></div>
+        <div class="log-panel" id="tab-ailog"></div>
+        <div class="log-panel" id="tab-rawlog"></div>
+        <div class="log-panel" id="tab-errors"></div>
+      </div>
 
-  <h2>Errors</h2>
-  <pre id="errors"></pre>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="status-line" id="statusLine">Αναμονή...</div>
+    </div>
+
+    <!-- ── Right panel: output viewer ── -->
+    <div class="right">
+      <div class="right-tabs tabs">
+        <div class="tab active" data-rtab="preview">Προεπισκόπηση</div>
+        <div class="tab" data-rtab="outputs">Αποτελέσματα</div>
+        <div class="tab" data-rtab="review">Αναθεώρηση <span class="tab-badge" id="reviewBadge"
+            style="display:none">0</span></div>
+      </div>
+
+      <div class="output-area">
+        <div class="output-panel active" id="rtab-preview">
+          <iframe id="preview-frame"
+            srcdoc="<html><body style='font-family:system-ui;color:#888;padding:40px;text-align:center'><p>Επεξεργαστείτε ένα ΦΕΚ για προεπισκόπηση.</p></body></html>"></iframe>
+        </div>
+
+        <div class="output-panel" id="rtab-outputs">
+          <div class="output-list" id="outputList">
+            <div class="empty-state">Δεν υπάρχουν αποτελέσματα ακόμα.</div>
+          </div>
+          <button class="btn btn-primary" style="max-width:200px;margin-top:12px" onclick="loadOutputs()">↻
+            Ανανέωση</button>
+        </div>
+
+        <div class="output-panel" id="rtab-review">
+          <div id="reviewList">
+            <div class="empty-state">Κανένα έγγραφο σε αναμονή αναθεώρησης.</div>
+          </div>
+          <button class="btn btn-primary" style="max-width:200px;margin-top:12px" onclick="loadReviewQueue()">↻
+            Ανανέωση</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
 
   <script>
-    const progressEl = document.getElementById('progress');
-    const rawLogsEl = document.getElementById('rawLogs');
-    const previewEl = document.getElementById('preview');
-    const aiLogEl = document.getElementById('aiLog');
-    const errorsEl = document.getElementById('errors');
+    // ── State ──────────────────────────────────────────────────────────
+    let ws = null;
+    let selectedFiles = [];
+    let errCount = 0;
+    let reviewCount = 0;
 
-    function log(el, text) {
-      el.textContent += text + "\n";
+    // ── Tabs ───────────────────────────────────────────────────────────
+    document.querySelectorAll('.tab[data-tab]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab[data-tab]').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.log-panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    document.querySelectorAll('.tab[data-rtab]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab[data-rtab]').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.output-panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('rtab-' + tab.dataset.rtab).classList.add('active');
+      });
+    });
+
+    // ── Logging ────────────────────────────────────────────────────────
+    function logTo(panelId, text, cls) {
+      const el = document.getElementById(panelId);
+      const line = document.createElement('div');
+      line.className = 'log-line' + (cls ? ' ' + cls : '');
+      line.textContent = text;
+      el.appendChild(line);
       el.scrollTop = el.scrollHeight;
     }
 
-    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+    function setStatus(msg) {
+      document.getElementById('statusLine').textContent = msg;
+    }
 
-    ws.onopen = () => log(progressEl, '[ws] connected');
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        let line = `[${msg.stage}] ${msg.message}`;
-        const ts = msg.ts ? msg.ts : '-';
-        if (msg.stage === 'log') {
-          const lvl = msg.level || 'INFO';
+    function setProgress(pct) {
+      document.getElementById('progressBar').style.width = Math.min(100, pct) + '%';
+    }
+
+    // ── WebSocket ──────────────────────────────────────────────────────
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      const badge = document.getElementById('wsBadge');
+
+      ws.onopen = () => {
+        badge.textContent = '● Συνδεδεμένο';
+        badge.classList.add('connected');
+        logTo('tab-progress', '[ws] συνδέθηκε', 'info');
+      };
+
+      ws.onclose = () => {
+        badge.textContent = '● Αποσυνδεδεμένο';
+        badge.classList.remove('connected');
+        setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = () => logTo('tab-errors', '[ws] σφάλμα σύνδεσης', 'error');
+
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); }
+        catch { return; }
+
+        const { stage, message, ts } = msg;
+        const time = ts ? ts.substring(11, 19) : '';
+
+        // Route to correct panels
+        if (stage === 'log') {
+          const lvl = (msg.level || 'INFO').toUpperCase();
           const src = msg.source || 'app';
-          const rawLine = `[${ts}] [${lvl}] [${src}] ${msg.message}`;
-          log(rawLogsEl, rawLine);
-          if (msg.traceback) {
-            log(rawLogsEl, msg.traceback);
-          }
+          const rawLine = `[${time}] [${lvl}] [${src}] ${message}`;
+          logTo('tab-rawlog', rawLine, lvl === 'ERROR' ? 'error' : lvl === 'WARNING' ? 'warn' : '');
+          if (msg.traceback) logTo('tab-rawlog', msg.traceback, 'error');
+          return;
         }
-        if (msg.stage === 'ai') {
-          const mode = msg.ai_mode ? ` mode=${msg.ai_mode}` : '';
-          const model = msg.model ? ` model=${msg.model}` : '';
-          const err = msg.llm_error ? ` error=${msg.llm_error}` : '';
-          line += mode + model + err;
+
+        if (stage === 'error') {
+          logTo('tab-errors', `[${time}] ${message}${msg.error ? ': ' + msg.error : ''}`, 'error');
+          errCount++;
+          const badge = document.getElementById('errBadge');
+          badge.textContent = errCount;
+          badge.style.display = '';
+          setStatus('❌ ' + message);
+          return;
         }
-        if (msg.stage === 'ai_start') {
-          line += ` model=${msg.model || '-'} ram_gb=${msg.free_ram_gb || '-'} chars=${msg.raw_chars || '-'}`;
-          if (msg.model_reason) line += ` reason=${msg.model_reason}`;
-          log(aiLogEl, line);
+
+        // Stage → progress panel
+        const stageEmoji = {
+          start: '⚡', detect: '🔍', extract: '📝', ocr: '👁',
+          merge: '🔗', ai_start: '🤖', ai: '✅', save: '💾',
+          amend: '⚖️', review: '⚠️', done: '🎉', ai_purge: '🗑️',
+        };
+        const emoji = stageEmoji[stage] || '▸';
+        logTo('tab-progress', `${emoji} [${time}] [${stage}] ${message}`, stage === 'done' ? 'info' : '');
+
+        // AI log panel
+        if (stage === 'ai_start') {
+          logTo('tab-ailog', `[${time}] model=${msg.model || '-'} ram=${msg.free_ram_gb || '-'}GB chars=${msg.raw_chars || '-'}`, 'stage');
+          logTo('tab-ailog', `        reason: ${msg.model_reason || '-'}`);
         }
-        if (msg.stage === 'ai') {
-          log(aiLogEl, line);
+        if (stage === 'ai') {
+          logTo('tab-ailog', `[${time}] ✓ completed chunks=${msg.chunks_processed || 1} id=${msg.document_id || '-'}`, 'info');
+          logTo('tab-ailog', `        title: ${msg.title || '-'}`);
         }
-        if (msg.stage === 'error') {
-          log(errorsEl, line + (msg.error ? ` :: ${msg.error}` : ''));
-        } else {
-          log(progressEl, line);
-        }
+
+        // Preview
         if (msg.ai_preview) {
-          previewEl.textContent = msg.ai_preview;
+          document.getElementById('preview-frame').srcdoc = msg.ai_preview;
+          // Switch to preview tab
+          document.querySelectorAll('.tab[data-rtab]').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.output-panel').forEach(p => p.classList.remove('active'));
+          document.querySelector('[data-rtab="preview"]').classList.add('active');
+          document.getElementById('rtab-preview').classList.add('active');
         }
-      } catch (e) {
-        log(errorsEl, '[parse] ' + String(e));
-      }
-    };
-    ws.onerror = () => log(errorsEl, '[ws] error');
-    ws.onclose = () => log(progressEl, '[ws] closed');
 
-    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        // Save event: add clickable link to preview
+        if (stage === 'save' && msg.html_url) {
+          const frameEl = document.getElementById('preview-frame');
+          frameEl.src = msg.html_url;
+          frameEl.removeAttribute('srcdoc');
+        }
+
+        // Done: refresh outputs list and review queue
+        if (stage === 'done') {
+          setStatus(`✅ ${message}`);
+          setProgress(100);
+          setTimeout(() => setProgress(0), 2000);
+          loadOutputs();
+          loadReviewQueue();
+        }
+
+        if (stage === 'review') {
+          reviewCount = (reviewCount || 0) + 1;
+          const badge = document.getElementById('reviewBadge');
+          badge.textContent = reviewCount;
+          badge.style.display = '';
+        }
+
+        // Progress bar heuristics
+        const stageProgress = { start: 5, detect: 15, extract: 30, ocr: 50, merge: 60, ai_start: 65, ai: 90, save: 95, done: 100 };
+        if (stageProgress[stage]) setProgress(stageProgress[stage]);
+        setStatus(`${emoji} ${message}`);
+      };
+
+      // Keep-alive ping
+      setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 10000);
+    }
+
+    connectWS();
+
+    // ── File selection ─────────────────────────────────────────────────
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
       e.preventDefault();
-      progressEl.textContent = '';
-      rawLogsEl.textContent = '';
-      previewEl.textContent = '';
-      aiLogEl.textContent = '';
-      errorsEl.textContent = '';
+      dropZone.classList.remove('dragover');
+      setFiles([...e.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith('.pdf')));
+    });
+    fileInput.addEventListener('change', () => setFiles([...fileInput.files]));
 
-      const files = document.getElementById('files').files;
+    function setFiles(files) {
+      selectedFiles = files;
+      const list = document.getElementById('fileList');
+      list.innerHTML = '';
+      files.forEach(f => {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.innerHTML = `<span class="fname">${f.name}</span><span class="fsize">${(f.size / 1024).toFixed(0)} KB</span>`;
+        list.appendChild(item);
+      });
+      document.getElementById('processBtn').disabled = files.length === 0;
+    }
+
+    // ── Process ────────────────────────────────────────────────────────
+    document.getElementById('processBtn').addEventListener('click', async () => {
+      if (!selectedFiles.length) return;
+
+      // Clear logs
+      ['tab-progress', 'tab-ailog', 'tab-rawlog', 'tab-errors'].forEach(id => {
+        document.getElementById(id).innerHTML = '';
+      });
+      errCount = 0;
+      document.getElementById('errBadge').style.display = 'none';
+      setProgress(5);
+      setStatus('⬆️ Μεταφόρτωση...');
+      document.getElementById('processBtn').disabled = true;
+
       const form = new FormData();
-      for (const file of files) form.append('files', file);
-
-      log(progressEl, 'Uploading and processing...');
+      selectedFiles.forEach(f => form.append('files', f));
 
       try {
         const res = await fetch('/process', { method: 'POST', body: form });
         const data = await res.json();
-        log(progressEl, '[result] ' + JSON.stringify(data, null, 2));
+        logTo('tab-progress', '[result] ' + JSON.stringify(data, null, 2));
       } catch (err) {
-        log(errorsEl, '[request] ' + String(err));
+        logTo('tab-errors', '[request] ' + String(err), 'error');
+      } finally {
+        document.getElementById('processBtn').disabled = false;
       }
     });
 
-    document.getElementById('purgeAiBtn').addEventListener('click', async () => {
-      const ok = window.confirm('This will stop Ollama and delete all local AI models. Continue?');
-      if (!ok) return;
-      log(progressEl, 'Running AI purge...');
+    // ── AI Purge ───────────────────────────────────────────────────────
+    document.getElementById('purgeBtn').addEventListener('click', async () => {
+      if (!confirm('Αυτό θα σταματήσει το Ollama και θα διαγράψει όλα τα τοπικά μοντέλα AI. Συνέχεια;')) return;
+      setStatus('🗑️ Εκκαθάριση AI...');
       try {
         const res = await fetch('/ai/purge', { method: 'POST' });
         const data = await res.json();
-        log(progressEl, '[ai_purge_result] ' + JSON.stringify(data, null, 2));
+        logTo('tab-progress', '[purge] ' + JSON.stringify(data), data.ok ? 'info' : 'warn');
+        setStatus(data.ok ? '✅ Εκκαθάριση ολοκληρώθηκε' : '⚠️ Εκκαθάριση με σφάλματα');
       } catch (err) {
-        log(errorsEl, '[ai_purge_request] ' + String(err));
+        logTo('tab-errors', '[purge] ' + String(err), 'error');
       }
     });
 
-    setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send('ping');
+    // ── Load outputs ───────────────────────────────────────────────────
+    async function loadOutputs() {
+      try {
+        const res = await fetch('/outputs');
+        const data = await res.json();
+        const list = document.getElementById('outputList');
+        if (!data.outputs.length) {
+          list.innerHTML = '<div class="empty-state">Δεν υπάρχουν αποτελέσματα ακόμα.</div>';
+          return;
+        }
+        list.innerHTML = data.outputs.map(o => `
+        <div class="output-card">
+          <h3>${o.id}</h3>
+          <div class="links">
+            <a href="${o.html_url}" target="_blank" onclick="previewOutput('${o.html_url}'); return false;">👁 Προεπισκόπηση</a>
+            <a href="${o.html_url}" download>⬇ HTML</a>
+            ${o.xml_url ? `<a href="${o.xml_url}" download>⬇ XML</a>` : ''}
+          </div>
+        </div>
+      `).join('');
+      } catch (e) {
+        console.error('loadOutputs failed', e);
       }
-    }, 10000);
+    }
+
+    function previewOutput(url) {
+      const frame = document.getElementById('preview-frame');
+      frame.src = url;
+      frame.removeAttribute('srcdoc');
+      document.querySelectorAll('.tab[data-rtab]').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.output-panel').forEach(p => p.classList.remove('active'));
+      document.querySelector('[data-rtab="preview"]').classList.add('active');
+      document.getElementById('rtab-preview').classList.add('active');
+    }
+
+    // ── Load review queue ──────────────────────────────────────────────
+    async function loadReviewQueue() {
+      try {
+        const res = await fetch('/review-queue');
+        const data = await res.json();
+        const list = document.getElementById('reviewList');
+        reviewCount = data.pending;
+        const badge = document.getElementById('reviewBadge');
+        badge.textContent = data.pending;
+        badge.style.display = data.pending ? '' : 'none';
+
+        if (!data.items.length) {
+          list.innerHTML = '<div class="empty-state">Κανένα έγγραφο σε αναμονή αναθεώρησης.</div>';
+          return;
+        }
+        list.innerHTML = data.items.map(item => `
+        <div class="review-card">
+          <h3>${item.title || item.document_id}</h3>
+          <div class="meta">
+            ID: ${item.document_id} &nbsp;|&nbsp;
+            Μοντέλο: ${item.metadata?.model || '-'} &nbsp;|&nbsp;
+            ${item.created_at?.substring(0, 10) || ''}
+          </div>
+          <ul>${(item.questions || []).map(q => `<li>${q}</li>`).join('')}</ul>
+        </div>
+      `).join('');
+      } catch (e) {
+        console.error('loadReviewQueue failed', e);
+      }
+    }
+
+    // Load on startup
+    loadOutputs();
+    loadReviewQueue();
   </script>
+
 </body>
+
 </html>

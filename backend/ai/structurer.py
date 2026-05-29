@@ -12,35 +12,66 @@ from lxml import etree as ET
 
 from .model_manager import chat_json
 
-SYSTEM_PROMPT = """
-You normalize Greek legal gazette (ΦΕΚ) OCR text into strict JSON.
-Respond with ONLY valid JSON – no markdown, no code fences, no explanation.
+# ── System prompt ─────────────────────────────────────────────────────────────
+# Critical: small models (qwen2.5:3b, phi3:mini) tend to:
+#   - Use camelCase field names instead of snake_case
+#   - Add extra fields not in the schema
+#   - Return incomplete JSON when output token limit is hit
+# The one-shot example and explicit aliases address all three.
 
-Output schema:
+SYSTEM_PROMPT = """You are a Greek legal document parser. Extract structured data from ΦΕΚ (Greek Government Gazette) OCR text.
+
+Output ONLY a single valid JSON object. No markdown. No code fences. No explanation. No text before or after the JSON.
+
+REQUIRED OUTPUT SCHEMA (use these EXACT field names, all snake_case):
 {
-  "document_type": "fek|law|unknown",
-  "title": "string",
-  "document_id": "string",
-  "publication_date": "YYYY-MM-DD or null",
-  "sections": [{"kind": "heading|paragraph|note|citation", "text": "..."}],
-  "signatures": ["..."],
-  "metadata": {"source_hint": "...", "confidence": 0.0},
-  "amendments": [{
-    "target_law_id": "...",
-    "operation": "replace|insert|delete|unknown",
-    "article": "...",
-    "old_text": "...",
-    "new_text": "...",
-    "confidence": 0.0,
-    "question_for_human": "... or empty string"
-  }]
+  "document_type": "fek",
+  "title": "full title string",
+  "document_id": "ΦΕΚ Α' 1/2026 or law number",
+  "publication_date": "YYYY-MM-DD",
+  "sections": [
+    {"kind": "heading", "text": "ΑΡΘΡΟ 1"},
+    {"kind": "paragraph", "text": "body text"},
+    {"kind": "note", "text": "footnote or annotation"},
+    {"kind": "citation", "text": "reference to another law"}
+  ],
+  "signatures": ["ΥΠΟΥΡΓΟΣ name"],
+  "metadata": {"source_hint": "series/issue info", "confidence": 0.85},
+  "amendments": [
+    {
+      "target_law_id": "ν. 4622/2019",
+      "operation": "replace",
+      "article": "άρθρο 46 παρ. 6",
+      "old_text": "text being replaced",
+      "new_text": "replacement text",
+      "confidence": 0.9,
+      "question_for_human": ""
+    }
+  ]
 }
 
-Rules:
-- Keep uncertain amendments with low confidence and a non-empty question_for_human.
-- All string values must be valid JSON strings (escape special chars).
-- The "amendments" array may be empty if no amendments are found.
-- Output ONLY the JSON object, nothing else.
+RULES:
+- document_type: use "fek" for gazette issues, "law" for standalone laws, "unknown" if unclear
+- publication_date: YYYY-MM-DD format only, null if not found
+- sections: preserve all meaningful text; use "heading" for article titles, "paragraph" for body
+- amendments: only include if the document explicitly modifies another law; empty array [] otherwise
+- confidence: float 0.0-1.0; use <0.75 for uncertain items and set question_for_human
+- All field names MUST be snake_case exactly as shown above""".strip()
+
+# Minimal retry prompt - used when first attempt fails JSON parsing
+RETRY_PROMPT = """Output ONLY valid JSON. No other text.
+
+Extract from this Greek legal text:
+- document_type (fek/law/unknown)
+- title
+- document_id (issue number like "ΦΕΚ Α' 1/2026")
+- publication_date (YYYY-MM-DD or null)
+- sections (array of {kind, text})
+- signatures (array of strings)
+- metadata ({confidence: 0.5})
+- amendments (empty array [])
+
+TEXT:
 """.strip()
 
 
@@ -53,42 +84,149 @@ class StructuredOutput:
     review_questions: List[str]
 
 
+# ── Field name normalisation ──────────────────────────────────────────────────
+# Maps common model mistakes (camelCase, alternate spellings) to canonical names.
+
+_FIELD_ALIASES: Dict[str, str] = {
+    "documentType": "document_type",
+    "documentId": "document_id",
+    "publicationDate": "publication_date",
+    "datePublished": "publication_date",
+    "date": "publication_date",
+    "documentNumber": "document_id",
+    "issueNumber": "document_id",
+    "type": "document_type",
+    "kind": "document_type",
+    "author": "_author_hint",  # not in schema, capture for title fallback
+    "issuer": "_author_hint",
+}
+
+_SECTION_KIND_ALIASES: Dict[str, str] = {
+    "header": "heading",
+    "title": "heading",
+    "body": "paragraph",
+    "text": "paragraph",
+    "footnote": "note",
+    "ref": "citation",
+    "reference": "citation",
+}
+
+
+def _normalise_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Rename aliased top-level keys to canonical names."""
+    out: Dict[str, Any] = {}
+    for k, v in raw.items():
+        canonical = _FIELD_ALIASES.get(k, k)
+        out[canonical] = v
+
+    # Ensure sections have valid 'kind' values
+    for sec in out.get("sections", []):
+        if isinstance(sec, dict):
+            sec["kind"] = _SECTION_KIND_ALIASES.get(
+                sec.get("kind", "paragraph"), sec.get("kind", "paragraph")
+            )
+    return out
+
+
 # ── JSON extraction ───────────────────────────────────────────────────────────
 
 
 def _extract_json(raw: str) -> Dict[str, Any]:
     """
     Parse JSON from LLM output robustly:
-    1. Strip leading/trailing whitespace.
-    2. Strip markdown code fences (``` … ``` or ```json … ```).
-    3. Extract the first complete {...} block if extra text surrounds it.
-    4. Attempt JSON parse; raise ValueError with a snippet on failure.
+    1. Strip markdown fences.
+    2. Find the first balanced { … } block.
+    3. Handle common truncation (missing closing braces).
+    4. Normalise aliased field names.
     """
     text = raw.strip()
 
     # Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
+    text = re.sub(r"\s*```\s*$", "", text)
     text = text.strip()
 
-    # If the response contains extra text before/after the JSON object,
-    # grab the first balanced { … } block.
-    if not text.startswith("{"):
-        m = re.search(r"\{", text)
-        if m:
-            text = text[m.start() :]
+    # Find start of JSON object
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in LLM output")
+    text = text[start:]
 
-    if text.endswith("}") is False:
-        # Find the last closing brace
-        idx = text.rfind("}")
-        if idx != -1:
-            text = text[: idx + 1]
+    # Try to find balanced closing brace (handles truncated output)
+    text = _balance_braces(text)
 
     try:
-        return json.loads(text)
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
-        snippet = text[:300].replace("\n", " ")
-        raise ValueError(f"LLM returned non-JSON output: {exc} | snippet: {snippet!r}")
+        # Last resort: try to salvage by cutting at the last valid comma
+        salvaged = _salvage_truncated_json(text)
+        if salvaged is not None:
+            data = salvaged
+        else:
+            snippet = text[:400].replace("\n", " ")
+            raise ValueError(
+                f"LLM returned non-JSON output: {exc} | snippet: {snippet!r}"
+            )
+
+    if not isinstance(data, dict):
+        raise ValueError(f"LLM returned JSON but not an object: {type(data)}")
+
+    return _normalise_fields(data)
+
+
+def _balance_braces(text: str) -> str:
+    """
+    If JSON is truncated mid-stream, close all open braces/brackets so
+    json.loads has a chance of succeeding (values may be empty/partial).
+    """
+    open_braces = 0
+    open_brackets = 0
+    in_string = False
+    escape_next = False
+
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            open_braces += 1
+        elif ch == "}":
+            open_braces = max(0, open_braces - 1)
+        elif ch == "[":
+            open_brackets += 1
+        elif ch == "]":
+            open_brackets = max(0, open_brackets - 1)
+
+    # Close any open structures (may produce partial/empty values, but parseable)
+    text = text.rstrip()
+    # Remove trailing comma before closing (common with truncation)
+    text = re.sub(r",\s*$", "", text)
+    text += "]" * open_brackets + "}" * open_braces
+    return text
+
+
+def _salvage_truncated_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Try progressively shorter versions of the text to find parseable JSON.
+    Returns None if nothing works.
+    """
+    # Try cutting at the last complete key-value pair
+    for pattern in [r",\s*\"[^\"]+\"\s*:\s*[^,\n]*$", r",\s*\{[^}]*$"]:
+        candidate = re.sub(pattern, "", text.rstrip())
+        candidate = _balance_braces(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
@@ -109,49 +247,201 @@ def _validate_llm_payload(data: Dict[str, Any]) -> None:
         raise ValueError(f"LLM JSON missing required keys: {', '.join(missing)}")
 
 
+def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill in any missing required keys with safe defaults."""
+    defaults: Dict[str, Any] = {
+        "document_type": "unknown",
+        "title": data.get("_author_hint", "Untitled"),
+        "document_id": "unknown",
+        "publication_date": None,
+        "sections": [],
+        "signatures": [],
+        "metadata": {"confidence": 0.5},
+        "amendments": [],
+    }
+    for k, v in defaults.items():
+        data.setdefault(k, v)
+    # Clean up internal hints
+    data.pop("_author_hint", None)
+    return data
+
+
+# ── Text chunking ─────────────────────────────────────────────────────────────
+
+# With OLLAMA_NUM_CTX=4096 we have room for ~2800 tokens of user text
+# (system prompt ≈ 350 tokens, JSON schema ≈ 200 tokens, safety margin ≈ 500).
+# 1 token ≈ 3.5 chars for Greek text → ~9800 chars per chunk.
+# We use 8000 to be safe.
+_MAX_CHARS_PER_CHUNK = 8000
+
+
+def _split_into_chunks(text: str) -> List[str]:
+    """
+    Split OCR text into page-sized chunks that fit within the context window.
+    Tries to split on [PAGE N] markers first, then falls back to character count.
+    """
+    pages = re.split(r"(\[PAGE \d+\])", text)
+    chunks: List[str] = []
+    current = ""
+
+    i = 0
+    while i < len(pages):
+        segment = pages[i]
+        if i + 1 < len(pages) and re.match(r"\[PAGE \d+\]", pages[i + 1]):
+            # Combine page marker with its content
+            segment = (
+                pages[i + 1] + pages[i + 2] if i + 2 < len(pages) else pages[i + 1]
+            )
+            i += 2
+        else:
+            i += 1
+
+        if len(current) + len(segment) > _MAX_CHARS_PER_CHUNK and current:
+            chunks.append(current.strip())
+            current = segment
+        else:
+            current += segment
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks or [text[:_MAX_CHARS_PER_CHUNK]]
+
+
+def _merge_chunk_data(chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Merge structured data from multiple chunks into a single document.
+    First chunk provides document-level metadata; all chunks contribute sections/amendments.
+    """
+    if not chunks_data:
+        return {}
+    if len(chunks_data) == 1:
+        return chunks_data[0]
+
+    merged = dict(chunks_data[0])
+    for subsequent in chunks_data[1:]:
+        # Extend sections and amendments from subsequent chunks
+        merged["sections"] = merged.get("sections", []) + subsequent.get("sections", [])
+        merged["amendments"] = merged.get("amendments", []) + subsequent.get(
+            "amendments", []
+        )
+        merged["signatures"] = list(
+            set(merged.get("signatures", [])) | set(subsequent.get("signatures", []))
+        )
+        # Use first non-null publication_date
+        if not merged.get("publication_date") and subsequent.get("publication_date"):
+            merged["publication_date"] = subsequent["publication_date"]
+        # Upgrade confidence if we got better data
+        existing_conf = merged.get("metadata", {}).get("confidence", 0)
+        new_conf = subsequent.get("metadata", {}).get("confidence", 0)
+        if new_conf > existing_conf:
+            merged["metadata"]["confidence"] = new_conf
+
+    return merged
+
+
 # ── Core structuring ─────────────────────────────────────────────────────────
 
 
-def structure_raw_text(
-    raw_text: str,
+def _structure_chunk(
+    chunk_text: str,
+    chunk_index: int,
+    total_chunks: int,
     log_hook: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
+    """Structure a single text chunk, with one retry on JSON parse failure."""
+    context_hint = (
+        f" (chunk {chunk_index + 1}/{total_chunks})" if total_chunks > 1 else ""
+    )
+
     prompt = (
-        "Normalize the following OCR text according to the JSON schema. "
-        "Mark uncertain items with low confidence and question_for_human.\n\n"
-        f"OCR TEXT:\n{raw_text[:18000]}"
+        f"Normalize the following ΦΕΚ OCR text{context_hint} to the JSON schema. "
+        "Mark uncertain amendments with low confidence and question_for_human.\n\n"
+        f"OCR TEXT:\n{chunk_text}"
     )
 
     result = chat_json(prompt=prompt, system_prompt=SYSTEM_PROMPT, log_hook=log_hook)
 
     try:
         data = _extract_json(result["raw"])
-    except (ValueError, json.JSONDecodeError) as exc:
-        # Return a minimal valid stub so the pipeline can continue
-        # and flag the document for human review.
-        data = {
-            "document_type": "unknown",
-            "title": "PARSE ERROR – manual review required",
-            "document_id": "parse-error",
-            "publication_date": None,
-            "sections": [{"kind": "note", "text": str(exc)}],
-            "signatures": [],
-            "metadata": {"confidence": 0.0, "parse_error": str(exc)},
-            "amendments": [],
-        }
+        _fill_missing_keys(data)
+        _validate_llm_payload(data)
+        return data
+    except (ValueError, json.JSONDecodeError) as first_exc:
+        if log_hook:
+            log_hook(
+                "ai",
+                f"chunk {chunk_index + 1} parse failed ({first_exc}), retrying with minimal prompt",
+            )
 
-    _validate_llm_payload(data)
+        # Retry with a simpler prompt
+        retry_prompt = RETRY_PROMPT + chunk_text[:4000]
+        retry_result = chat_json(
+            prompt=retry_prompt, system_prompt=SYSTEM_PROMPT, log_hook=log_hook
+        )
+        try:
+            data = _extract_json(retry_result["raw"])
+            _fill_missing_keys(data)
+            _validate_llm_payload(data)
+            data["metadata"]["retried"] = True
+            return data
+        except (ValueError, json.JSONDecodeError) as second_exc:
+            # Both attempts failed – return a stub that keeps the pipeline running
+            if log_hook:
+                log_hook(
+                    "ai", f"chunk {chunk_index + 1} retry also failed: {second_exc}"
+                )
+            return {
+                "document_type": "unknown",
+                "title": "PARSE ERROR – manual review required",
+                "document_id": "parse-error",
+                "publication_date": None,
+                "sections": [
+                    {"kind": "note", "text": f"[chunk {chunk_index + 1}] {second_exc}"}
+                ],
+                "signatures": [],
+                "metadata": {"confidence": 0.0, "parse_error": str(second_exc)},
+                "amendments": [],
+            }
 
-    data.setdefault("metadata", {})
-    data["metadata"].update(
+
+def structure_raw_text(
+    raw_text: str,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    chunks = _split_into_chunks(raw_text)
+    total = len(chunks)
+
+    if log_hook:
+        log_hook(
+            "ai", f"processing {total} chunk(s) from {len(raw_text)} chars of OCR text"
+        )
+
+    chunks_data: List[Dict[str, Any]] = []
+    primary_model = None
+    primary_reason = None
+
+    for i, chunk in enumerate(chunks):
+        data = _structure_chunk(chunk, i, total, log_hook=log_hook)
+        if primary_model is None:
+            primary_model = data.get("metadata", {}).get("model") or "unknown"
+            primary_reason = data.get("metadata", {}).get("model_reason") or ""
+        chunks_data.append(data)
+
+    merged = _merge_chunk_data(chunks_data)
+    _fill_missing_keys(merged)
+
+    merged.setdefault("metadata", {})
+    merged["metadata"].update(
         {
             "ai_mode": "llm",
-            "model": result["model"],
-            "model_reason": result["reason"],
+            "model": primary_model,
+            "model_reason": primary_reason,
+            "chunks_processed": total,
             "processed_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-    return data
+    return merged
 
 
 # ── XML serialisation ─────────────────────────────────────────────────────────
@@ -251,7 +541,6 @@ def build_outputs(
         if (amend.get("confidence") or 0) < 0.75 and amend.get("question_for_human"):
             review_questions.append(amend["question_for_human"])
 
-    # Also flag if the whole document parse failed
     if data.get("metadata", {}).get("parse_error"):
         review_questions.append(
             "AI returned unparseable output – full manual review required."
