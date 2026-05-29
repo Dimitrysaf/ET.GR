@@ -275,6 +275,51 @@ def should_pause_for_memory() -> bool:
     return get_free_ram_gb() < RAM_DANGER_GB
 
 
+def classify_image(
+    image_path: str,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> str:
+    """
+    Classifies an image using a local multimodal model (e.g., llava).
+    Returns "pure_text", "table", "chart", or "photo".
+    """
+    # Prefer a multimodal model if available, otherwise use default
+    _start_ollama_server_if_needed(log_hook=log_hook)
+    client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
+
+    available = _list_available_models(client)
+    # Heuristic: look for 'llava' or 'bakllava' or 'moondream'
+    model = "llava"
+    if "llava" not in available:
+        if available:
+            model = available[0]
+        else:
+            _ensure_local_model(client, log_hook=log_hook)
+            model = _list_available_models(client)[0]
+
+    prompt = (
+        "Classify this image into one of these categories: 'pure_text', 'table', 'chart', 'photo'. "
+        "Reply with ONLY the category name."
+    )
+
+    try:
+        response = client.generate(
+            model=model,
+            prompt=prompt,
+            images=[image_path],
+            stream=False
+        )
+        category = response.get("response", "photo").strip().lower()
+        # Clean up category in case the model ignored "ONLY"
+        for candidate in ["pure_text", "table", "chart", "photo"]:
+            if candidate in category:
+                return candidate
+        return "photo"
+    except Exception as exc:
+        _emit(log_hook, "ai", f"classify_image failed: {exc}")
+        return "photo"
+
+
 # ── Main chat entry point ────────────────────────────────────────────────────
 
 

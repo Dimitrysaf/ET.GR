@@ -1,6 +1,7 @@
 """Apply FEK amendments to law text with version snapshotting semantics."""
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple
 
@@ -11,6 +12,7 @@ class AmendmentResult:
     low_confidence: bool
     notes: List[str]
     new_law_text: str
+    diff: str = ""
 
 
 def apply_amendments(current_law_text: str, amendments: List[Dict[str, Any]]) -> AmendmentResult:
@@ -54,4 +56,20 @@ def apply_amendments(current_law_text: str, amendments: List[Dict[str, Any]]) ->
             notes.append(f"unknown operation in amendment #{idx}")
             low_confidence = True
 
-    return AmendmentResult(changed=changed, low_confidence=low_confidence, notes=notes, new_law_text=text)
+    diff = ""
+    if changed:
+        diff_lines = difflib.unified_diff(
+            current_law_text.splitlines(keepends=True),
+            text.splitlines(keepends=True),
+            fromfile='current',
+            tofile='updated'
+        )
+        diff = "".join(diff_lines)
+
+    return AmendmentResult(
+        changed=changed,
+        low_confidence=low_confidence,
+        notes=notes,
+        new_law_text=text,
+        diff=diff
+    )

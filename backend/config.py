@@ -12,6 +12,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 INPUT_DIR = os.path.join(DATA_DIR, "input")
 OUTPUT_XML_DIR = os.path.join(DATA_DIR, "output", "xml")
 OUTPUT_HTML_DIR = os.path.join(DATA_DIR, "output", "html")
+IMAGES_DIR = os.path.join(DATA_DIR, "output", "images")
 LAWS_DIR = os.path.join(DATA_DIR, "laws")
 REVIEW_DIR = os.path.join(DATA_DIR, "review_queue")
 
@@ -52,6 +53,9 @@ OLLAMA_MAX_OUTPUT_TOKENS = int(os.environ.get("OLLAMA_MAX_OUTPUT_TOKENS", 2048))
 
 # ── Memory safety ────────────────────────────────────────────────────────────
 RAM_DANGER_GB = float(os.environ.get("RAM_DANGER_GB", 2.5))
+
+# ── Azure ────────────────────────────────────────────────────────────────────
+DOCINTEL_ENDPOINT = os.environ.get("DOCINTEL_ENDPOINT", None)
 
 # ── Output ───────────────────────────────────────────────────────────────────
 XML_ENCODING = "utf-8"

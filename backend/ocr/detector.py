@@ -20,14 +20,18 @@ except ImportError:
 try:
     from backend.config import (
         MIN_TEXT_CONFIDENCE, MIN_CHARS_PER_PAGE,
-        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND
+        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND,
+        IMAGES_DIR
     )
 except ImportError:
     from config import (
         MIN_TEXT_CONFIDENCE, MIN_CHARS_PER_PAGE,
-        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND
+        COLUMN_WHITE_RATIO, COLUMN_SEARCH_BAND,
+        IMAGES_DIR
     )
 
+import os
+import uuid
 
 # ── Αποτέλεσμα ανάλυσης ──────────────────────────────────────────────────────
 
@@ -102,6 +106,42 @@ def detect_document(pdf_path: str) -> List[PageInfo]:
         results.append(info)
     doc.close()
     return results
+
+
+def extract_images_from_pdf(pdf_path: str) -> List[dict]:
+    """
+    Extracts all images from a PDF and saves them to IMAGES_DIR.
+    Returns a list of dicts with page_num, image_path, and xref.
+    """
+    doc = fitz.open(pdf_path)
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    extracted = []
+
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        image_list = page.get_images(full=True)
+
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            ext = base_image["ext"]
+
+            image_filename = f"{uuid.uuid4()}.{ext}"
+            image_path = os.path.join(IMAGES_DIR, image_filename)
+
+            with open(image_path, "wb") as f:
+                f.write(image_bytes)
+
+            extracted.append({
+                "page_num": page_index + 1,
+                "image_path": image_path,
+                "xref": xref,
+                "ext": ext
+            })
+
+    doc.close()
+    return extracted
 
 
 # ── Βοηθητικές ───────────────────────────────────────────────────────────────

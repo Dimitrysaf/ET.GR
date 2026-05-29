@@ -17,11 +17,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 try:
-    from backend.ocr.detector import detect_document
+    from markitdown import MarkItDown
+    from backend.ocr.detector import detect_document, extract_images_from_pdf
     from backend.ocr.extractor import extract_document_text_layer
-    from backend.ocr.engine import ocr_document
+    from backend.ocr.engine import ocr_document, ocr_image
     from backend.ai.structurer import build_outputs
-    from backend.ai.model_manager import choose_model
+    from backend.ai.model_manager import choose_model, classify_image
     from backend.ai.diff_engine import apply_amendments
     from backend.ai.review_queue import enqueue_review, list_pending_reviews
     from backend.storage.organizer import ensure_dirs, output_paths, write_text
@@ -31,18 +32,28 @@ try:
         OLLAMA_BASE_URL,
         OUTPUT_HTML_DIR,
         OUTPUT_XML_DIR,
+        DOCINTEL_ENDPOINT,
+        IMAGES_DIR
     )
 except ImportError:
-    from ocr.detector import detect_document
+    from markitdown import MarkItDown
+    from ocr.detector import detect_document, extract_images_from_pdf
     from ocr.extractor import extract_document_text_layer
-    from ocr.engine import ocr_document
+    from ocr.engine import ocr_document, ocr_image
     from ai.structurer import build_outputs
-    from ai.model_manager import choose_model
+    from ai.model_manager import choose_model, classify_image
     from ai.diff_engine import apply_amendments
     from ai.review_queue import enqueue_review, list_pending_reviews
     from storage.organizer import ensure_dirs, output_paths, write_text
     from storage.versioning import get_current_law_text, snapshot_and_update
-    from config import INPUT_DIR, OLLAMA_BASE_URL, OUTPUT_HTML_DIR, OUTPUT_XML_DIR
+    from config import (
+        INPUT_DIR,
+        OLLAMA_BASE_URL,
+        OUTPUT_HTML_DIR,
+        OUTPUT_XML_DIR,
+        DOCINTEL_ENDPOINT,
+        IMAGES_DIR
+    )
 
 app = FastAPI(title="FEK Processor")
 
@@ -56,6 +67,9 @@ app.add_middleware(
 
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
+
+from backend.config import DATA_DIR
+app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
 logger = logging.getLogger("fek_processor")
 logging.basicConfig(
@@ -187,37 +201,41 @@ async def process_pdf(pdf_path: str) -> Dict:
     await _log("info", "process_pdf", f"started file={filename}")
     await _event("start", f"Processing {filename}")
 
-    # ── Detect ──────────────────────────────────────────────
-    page_infos = detect_document(pdf_path)
-    logger.info("detect complete pages=%s", len(page_infos))
-    await _event("detect", "Page detection finished", pages=len(page_infos))
+    # ── Extract Images ──────────────────────────────────────
+    await _event("extract_images", "Extracting images from PDF")
+    extracted_images = extract_images_from_pdf(pdf_path)
 
-    # ── Extract text layer ───────────────────────────────────
-    text_layer = extract_document_text_layer(pdf_path, page_infos)
-    await _event("extract", "Text-layer extraction finished")
-
-    # ── OCR scanned pages ────────────────────────────────────
-    # NOTE: progress_callback signature is (done, total, page_num)
     loop = asyncio.get_running_loop()
 
-    def progress(done: int, total: int, page_num: int):
-        asyncio.run_coroutine_threadsafe(
-            _event("ocr", f"OCR page {page_num}", done=done, total=total),
-            loop,
-        )
+    # ── Classify and OCR Images ─────────────────────────────
+    image_processed_content = {} # xref -> text or marker
 
-    ocr_pages = await asyncio.to_thread(ocr_document, pdf_path, page_infos, progress)
-    ocr_map = {item["page_num"]: item["text"] for item in ocr_pages}
+    for i, img_info in enumerate(extracted_images):
+        await _event("ocr", f"Processing image {i+1}/{len(extracted_images)}", done=i, total=len(extracted_images))
 
-    # ── Merge text ───────────────────────────────────────────
-    merged_pages = []
-    for item in text_layer:
-        p = item["page_num"]
-        txt = item["text"] if item["text"] else ocr_map.get(p, "")
-        merged_pages.append(f"\n\n[PAGE {p}]\n\n{txt}")
+        category = await asyncio.to_thread(classify_image, img_info["image_path"])
+        if category == "pure_text":
+            text = await asyncio.to_thread(ocr_image, img_info["image_path"])
+            image_processed_content[img_info["xref"]] = text
+        else:
+            # Keep as image marker for later replacement in markdown
+            rel_path = os.path.relpath(img_info["image_path"], os.path.dirname(os.path.dirname(__file__)))
+            image_processed_content[img_info["xref"]] = f"![{category}](/{rel_path})"
 
-    raw_text = "".join(merged_pages).strip()
-    await _event("merge", "Raw text merged", chars=len(raw_text))
+    # ── MarkItDown Conversion ───────────────────────────────
+    await _event("markitdown", "Converting PDF to Markdown using MarkItDown")
+
+    md_converter = MarkItDown(docintel_endpoint=DOCINTEL_ENDPOINT)
+    result = await asyncio.to_thread(md_converter.convert, pdf_path)
+    raw_text = result.text_content
+
+    # Post-process raw_text to append non-text images
+    non_text_images = [v for k, v in image_processed_content.items() if "![" in v]
+    if non_text_images:
+        raw_text += "\n\n## Extracted Images (Photos/Tables/Charts)\n\n"
+        raw_text += "\n\n".join(non_text_images)
+
+    await _event("merge", "Markdown content ready", chars=len(raw_text))
 
     # ── AI structuring ───────────────────────────────────────
     def ai_log(source: str, message: str) -> None:
@@ -278,10 +296,12 @@ async def process_pdf(pdf_path: str) -> Dict:
         )
 
         if result.changed:
+            amend["diff"] = result.diff  # Store diff in the amendment object
             current_path, version_path = snapshot_and_update(
                 law_id=law_id,
                 new_text=result.new_law_text,
                 effective_date=structured.data.get("publication_date"),
+                diff=result.diff
             )
             await _event(
                 "amend",

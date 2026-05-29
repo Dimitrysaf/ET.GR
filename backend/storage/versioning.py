@@ -25,13 +25,14 @@ def get_current_law_text(law_id: str) -> str:
         return f.read()
 
 
-def snapshot_and_update(law_id: str, new_text: str, effective_date: Optional[str]) -> Tuple[str, str]:
+def snapshot_and_update(law_id: str, new_text: str, effective_date: Optional[str], diff: str = "") -> Tuple[str, str]:
     d = _law_dir(law_id)
     os.makedirs(d, exist_ok=True)
 
     current_path = os.path.join(d, "current.txt")
     date_label = effective_date or datetime.utcnow().strftime("%Y-%m-%d")
     version_path = os.path.join(d, f"version_{date_label}.txt")
+    diff_path = os.path.join(d, f"diff_{date_label}.patch")
 
     old_text = ""
     if os.path.exists(current_path):
@@ -44,5 +45,7 @@ def snapshot_and_update(law_id: str, new_text: str, effective_date: Optional[str
 
     write_text(version_path, new_text)
     write_text(current_path, new_text)
+    if diff:
+        write_text(diff_path, diff)
 
     return current_path, version_path
