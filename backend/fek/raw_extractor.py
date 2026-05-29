@@ -196,7 +196,14 @@ _XML_ILLEGAL = re.compile(
 
 def _sanitize_for_xml(text: str) -> str:
     """Αφαιρεί χαρακτήρες που δεν επιτρέπονται σε XML 1.0 (π.χ. NULL, control chars από OCR)."""
+    if not isinstance(text, str):
+        return ""
     return _XML_ILLEGAL.sub("�", text)
+
+
+def _sx(metadata: Dict[str, Any], key: str) -> str:
+    """Εξάγει και sanitarίζει ένα metadata string για χρήση σε XML."""
+    return _sanitize_for_xml(metadata.get(key) or "")
 
 
 def build_archive_xml(metadata: Dict[str, Any], raw_text: str) -> str:
@@ -213,19 +220,13 @@ def build_archive_xml(metadata: Dict[str, Any], raw_text: str) -> str:
     root = ET.Element("FEK")
 
     metadata_el = ET.SubElement(root, "Metadata")
-    titlos_el = ET.SubElement(metadata_el, "Titlos")
-    titlos_el.text = metadata.get("titlos") or ""
-    teychos_el = ET.SubElement(metadata_el, "Teychos")
-    teychos_el.text = metadata.get("teychos") or ""
-    arithmos_el = ET.SubElement(metadata_el, "ArithmosFyllou")
-    arithmos_el.text = metadata.get("arithmos_fyllou") or ""
-    hmerominia_el = ET.SubElement(metadata_el, "Hmerominia")
-    hmerominia_el.text = metadata.get("hmerominia") or ""
-    typos_el = ET.SubElement(metadata_el, "Typos")
-    typos_el.text = metadata.get("document_type") or ""
+    ET.SubElement(metadata_el, "Titlos").text        = _sx(metadata, "titlos")
+    ET.SubElement(metadata_el, "Teychos").text       = _sx(metadata, "teychos")
+    ET.SubElement(metadata_el, "ArithmosFyllou").text = _sx(metadata, "arithmos_fyllou")
+    ET.SubElement(metadata_el, "Hmerominia").text    = _sx(metadata, "hmerominia")
+    ET.SubElement(metadata_el, "Typos").text         = _sx(metadata, "document_type")
 
-    keimeno_el = ET.SubElement(root, "Keimeno")
-    keimeno_el.text = _sanitize_for_xml(raw_text)
+    ET.SubElement(root, "Keimeno").text = _sanitize_for_xml(raw_text)
 
     return ET.tostring(
         root, pretty_print=True, xml_declaration=True, encoding="utf-8"
