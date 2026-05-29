@@ -271,6 +271,40 @@ def choose_model(
     )
 
 
+def stop_active_models(log_hook: Optional[Callable[[str, str], None]] = None) -> List[str]:
+    """Stop currently running Ollama model sessions without deleting local models."""
+    stopped: List[str] = []
+    try:
+        client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
+        ps_resp = client.ps()
+        active_items = (
+            ps_resp.get("models", [])
+            if isinstance(ps_resp, dict)
+            else list(getattr(ps_resp, "models", None) or [])
+        )
+        for item in active_items:
+            name = (
+                item.get("model") or item.get("name")
+                if isinstance(item, dict)
+                else getattr(item, "model", None) or getattr(item, "name", None)
+            )
+            if not name:
+                continue
+            try:
+                stop_fn = getattr(client, "stop", None)
+                if stop_fn:
+                    stop_fn(name)
+                    stopped.append(name)
+                    _emit(log_hook, "ollama", f"stopped model={name}")
+                else:
+                    _emit(log_hook, "ollama", "stop() not available on this Ollama client")
+            except Exception as exc:
+                _emit(log_hook, "ollama", f"failed to stop model={name}: {exc}")
+    except Exception as exc:
+        _emit(log_hook, "ollama", f"stop_active_models failed: {exc}")
+    return stopped
+
+
 def should_pause_for_memory() -> bool:
     return get_free_ram_gb() < RAM_DANGER_GB
 

@@ -89,7 +89,7 @@ try:
     from backend.ocr.extractor import extract_document_text_layer
     from backend.ocr.engine import ocr_document, ocr_image
     from backend.ai.structurer import build_outputs
-    from backend.ai.model_manager import choose_model, classify_image
+    from backend.ai.model_manager import choose_model, classify_image, stop_active_models
     from backend.ai.diff_engine import apply_amendments
     from backend.ai.review_queue import enqueue_review, list_pending_reviews
     from backend.storage.organizer import ensure_dirs, output_paths, write_text
@@ -110,7 +110,7 @@ except Exception:  # pragma: no cover - careful fallback for missing deps
         from ocr.extractor import extract_document_text_layer
         from ocr.engine import ocr_document, ocr_image
         from ai.structurer import build_outputs
-        from ai.model_manager import choose_model, classify_image
+        from ai.model_manager import choose_model, classify_image, stop_active_models
         from ai.diff_engine import apply_amendments
         from ai.review_queue import enqueue_review, list_pending_reviews
         from storage.organizer import ensure_dirs, output_paths, write_text
@@ -398,107 +398,119 @@ async def process_pdf(pdf_path: str) -> Dict:
         logger.info("%s %s", source, message)
         asyncio.run_coroutine_threadsafe(_log("info", source, message), loop)
 
-    decision = await asyncio.to_thread(choose_model, None, ai_log)
-    await _event(
-        "ai_start",
-        "AI structuring started",
-        model=decision.model,
-        free_ram_gb=decision.free_ram_gb,
-        model_reason=decision.reason,
-        raw_chars=len(raw_text),
-    )
-
-    structured = await asyncio.to_thread(build_outputs, raw_text, ai_log)
-    chunks_processed = structured.data.get("metadata", {}).get("chunks_processed", 1)
-    await _event(
-        "ai",
-        "AI structuring completed",
-        document_id=structured.data.get("document_id"),
-        title=structured.data.get("title"),
-        ai_mode=structured.data.get("metadata", {}).get("ai_mode"),
-        model=structured.data.get("metadata", {}).get("model"),
-        chunks_processed=chunks_processed,
-        ai_preview=structured.html_text[:1500],
-    )
-
-    # ── Save outputs ─────────────────────────────────────────
-    doc_id = structured.data.get("document_id") or filename
-    paths = output_paths(doc_id)
-    write_text(paths["xml"], structured.xml_text)
-    write_text(paths["html"], structured.html_text)
-    await _event(
-        "save",
-        "XML/HTML saved",
-        xml=paths["xml"],
-        html=paths["html"],
-        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
-        xml_url=f"/outputs/xml/{os.path.basename(paths['xml'])}",
-    )
-
-    # ── Apply amendments ─────────────────────────────────────
-    amendment_notes: List[str] = []
-    for amend in structured.data.get("amendments", []):
-        law_id = amend.get("target_law_id")
-        if not law_id:
-            continue
-
-        current = get_current_law_text(law_id)
-        result = apply_amendments(current, [amend])
-        amendment_notes.extend(result.notes)
-        await _log(
-            "info",
-            "amend",
-            f"target={law_id} changed={result.changed} notes={len(result.notes)}",
+    try:
+        decision = await asyncio.to_thread(choose_model, None, ai_log)
+        await _event(
+            "ai_start",
+            "AI structuring started",
+            model=decision.model,
+            free_ram_gb=decision.free_ram_gb,
+            model_reason=decision.reason,
+            raw_chars=len(raw_text),
         )
 
-        if result.changed:
-            amend["diff"] = result.diff  # Store diff in the amendment object
-            current_path, version_path = snapshot_and_update(
-                law_id=law_id,
-                new_text=result.new_law_text,
-                effective_date=structured.data.get("publication_date"),
-                diff=result.diff
+        structured = await asyncio.to_thread(build_outputs, raw_text, ai_log)
+        chunks_processed = structured.data.get("metadata", {}).get("chunks_processed", 1)
+        await _event(
+            "ai",
+            "AI structuring completed",
+            document_id=structured.data.get("document_id"),
+            title=structured.data.get("title"),
+            ai_mode=structured.data.get("metadata", {}).get("ai_mode"),
+            model=structured.data.get("metadata", {}).get("model"),
+            chunks_processed=chunks_processed,
+            ai_preview=structured.html_text[:1500],
+        )
+
+        # ── Save outputs ─────────────────────────────────────────
+        doc_id = structured.data.get("document_id") or filename
+        paths = output_paths(doc_id)
+        write_text(paths["xml"], structured.xml_text)
+        write_text(paths["html"], structured.html_text)
+        await _event(
+            "save",
+            "XML/HTML saved",
+            xml=paths["xml"],
+            html=paths["html"],
+            html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
+            xml_url=f"/outputs/xml/{os.path.basename(paths['xml'])}",
+        )
+
+        # ── Apply amendments ─────────────────────────────────────
+        amendment_notes: List[str] = []
+        for amend in structured.data.get("amendments", []):
+            law_id = amend.get("target_law_id")
+            if not law_id:
+                continue
+
+            current = get_current_law_text(law_id)
+            result = apply_amendments(current, [amend])
+            amendment_notes.extend(result.notes)
+            await _log(
+                "info",
+                "amend",
+                f"target={law_id} changed={result.changed} notes={len(result.notes)}",
+            )
+
+            if result.changed:
+                amend["diff"] = result.diff  # Store diff in the amendment object
+                current_path, version_path = snapshot_and_update(
+                    law_id=law_id,
+                    new_text=result.new_law_text,
+                    effective_date=structured.data.get("publication_date"),
+                    diff=result.diff
+                )
+                await _event(
+                    "amend",
+                    f"Applied amendment to {law_id}",
+                    current=current_path,
+                    version=version_path,
+                )
+
+        # ── Review queue ─────────────────────────────────────────
+        if structured.needs_review or amendment_notes:
+            review_path = enqueue_review(
+                {
+                    "document_id": doc_id,
+                    "title": structured.data.get("title"),
+                    "questions": structured.review_questions + amendment_notes,
+                    "raw_excerpt": raw_text[:3000],
+                    "metadata": structured.data.get("metadata", {}),
+                }
             )
             await _event(
-                "amend",
-                f"Applied amendment to {law_id}",
-                current=current_path,
-                version=version_path,
+                "review",
+                "Queued for human review",
+                review_file=review_path,
+                question_count=len(structured.review_questions) + len(amendment_notes),
             )
 
-    # ── Review queue ─────────────────────────────────────────
-    if structured.needs_review or amendment_notes:
-        review_path = enqueue_review(
-            {
-                "document_id": doc_id,
-                "title": structured.data.get("title"),
-                "questions": structured.review_questions + amendment_notes,
-                "raw_excerpt": raw_text[:3000],
-                "metadata": structured.data.get("metadata", {}),
-            }
-        )
         await _event(
-            "review",
-            "Queued for human review",
-            review_file=review_path,
-            question_count=len(structured.review_questions) + len(amendment_notes),
+            "done",
+            f"Finished {filename}",
+            document_id=doc_id,
+            html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
         )
-
-    await _event(
-        "done",
-        f"Finished {filename}",
-        document_id=doc_id,
-        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
-    )
-    return {
-        "document_id": doc_id,
-        "title": structured.data.get("title"),
-        "xml": paths["xml"],
-        "html": paths["html"],
-        "html_url": f"/outputs/html/{os.path.basename(paths['html'])}",
-        "xml_url": f"/outputs/xml/{os.path.basename(paths['xml'])}",
-        "needs_review": structured.needs_review or bool(amendment_notes),
-    }
+        return {
+            "document_id": doc_id,
+            "title": structured.data.get("title"),
+            "xml": paths["xml"],
+            "html": paths["html"],
+            "html_url": f"/outputs/html/{os.path.basename(paths['html'])}",
+            "xml_url": f"/outputs/xml/{os.path.basename(paths['xml'])}",
+            "needs_review": structured.needs_review or bool(amendment_notes),
+        }
+    finally:
+        try:
+            stopped = await asyncio.to_thread(stop_active_models, ai_log)
+            if stopped:
+                await _event(
+                    "ai_purge",
+                    "Cleared Ollama model sessions after PDF",
+                    stopped_models=stopped,
+                )
+        except Exception as exc:
+            await _log("warning", "ai_purge", f"failed to clear AI state: {exc}")
 
 
 @app.post("/process")
