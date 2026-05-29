@@ -12,4 +12,4 @@ __pycache__/
 data/output/html/*
 data/output/images/*
 data/output/xml/*
-data/review_queue/*
+data/review_queue/*.claude/
