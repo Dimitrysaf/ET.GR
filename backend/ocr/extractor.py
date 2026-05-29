@@ -57,7 +57,9 @@ def _extract_two_columns(page: fitz.Page, column_x: int) -> str:
     if right_text:
         parts.append(right_text)
 
-    return "\n\n--- ΣΤΗΛΗ 2 ---\n\n".join(parts)
+    # ΦΕΚ: οι στήλες είναι συνεχής ροή ανάγνωσης (αριστερά → δεξιά).
+    # Ενώνουμε με απλό newline — χωρίς ορατό marker που μολύνει το πιστό κείμενο.
+    return "\n".join(parts)
 
 
 def extract_document_text_layer(pdf_path: str, page_infos: List[PageInfo]) -> List[dict]:

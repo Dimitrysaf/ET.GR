@@ -92,6 +92,12 @@ try:
     from backend.ai.model_manager import choose_model, classify_image, stop_active_models
     from backend.ai.diff_engine import apply_amendments
     from backend.ai.review_queue import enqueue_review, list_pending_reviews
+    from backend.fek.raw_extractor import (
+        extract_raw_text,
+        extract_metadata,
+        build_archive_xml,
+        build_archive_html,
+    )
     from backend.storage.organizer import ensure_dirs, output_paths, write_text
     from backend.storage.versioning import get_current_law_text, snapshot_and_update
     from backend.config import (
@@ -113,6 +119,12 @@ except Exception:  # pragma: no cover - careful fallback for missing deps
         from ai.model_manager import choose_model, classify_image, stop_active_models
         from ai.diff_engine import apply_amendments
         from ai.review_queue import enqueue_review, list_pending_reviews
+        from fek.raw_extractor import (
+            extract_raw_text,
+            extract_metadata,
+            build_archive_xml,
+            build_archive_html,
+        )
         from storage.organizer import ensure_dirs, output_paths, write_text
         from storage.versioning import get_current_law_text, snapshot_and_update
         from config import (
@@ -352,165 +364,69 @@ async def process_pdf(pdf_path: str) -> Dict:
             rel_path = os.path.relpath(img_info["image_path"], os.path.dirname(os.path.dirname(__file__)))
             image_processed_content[img_info["xref"]] = f"![{category}](/{rel_path})"
 
-    # ── MarkItDown Conversion (Page by Page) ────────────────
-    await _event("markitdown", "Converting PDF to Markdown using MarkItDown (page by page)")
-    
-    md_converter = MarkItDown(docintel_endpoint=DOCINTEL_ENDPOINT)
-    doc = fitz.open(pdf_path)
-    merged_md_parts = []
-    
-    for page_num in range(1, len(doc) + 1):
-        # Create a 1-page temporary PDF for MarkItDown
-        temp_page_path = f"{pdf_path}_page_{page_num}.pdf"
-        temp_doc = fitz.open()
-        temp_doc.insert_pdf(doc, from_page=page_num-1, to_page=page_num-1)
-        temp_doc.save(temp_page_path)
-        temp_doc.close()
-        
-        try:
-            page_result = await asyncio.to_thread(md_converter.convert, temp_page_path)
-            page_md = page_result.text_content
-            
-            # Find images for this page
-            page_images = [img for img in extracted_images if img["page_num"] == page_num]
-            for img in page_images:
-                processed = image_processed_content.get(img["xref"], "")
-                if "![" in processed: # it's a photo/table/chart
-                    # Try to insert marker or append if not found
-                    page_md += f"\n\n{processed}\n\n"
-                elif processed: # it's pure_text
-                    # Check if already there, otherwise append
-                    if processed[:50] not in page_md:
-                        page_md += f"\n\n[OCR TEXT]:\n{processed}\n\n"
-            
-            merged_md_parts.append(f"[PAGE {page_num}]\n\n{page_md}")
-        finally:
-            if os.path.exists(temp_page_path):
-                os.remove(temp_page_path)
-    
-    doc.close()
-    raw_text = "\n\n".join(merged_md_parts)
-    
-    await _event("merge", "Markdown content ready", chars=len(raw_text))
-
-    # ── AI structuring ───────────────────────────────────────
-    def ai_log(source: str, message: str) -> None:
+    # ── Faithful raw extraction (NO AI restructuring) ──────────
+    # Επίπεδο 1: εξάγουμε το ΦΕΚ αυτούσιο (verbatim) με τα υπάρχοντα
+    # detector + extractor + OCR engine. Κανένα AI restructuring.
+    def extract_log(source: str, message: str) -> None:
         logger.info("%s %s", source, message)
         asyncio.run_coroutine_threadsafe(_log("info", source, message), loop)
 
-    try:
-        decision = await asyncio.to_thread(choose_model, None, ai_log)
-        await _event(
-            "ai_start",
-            "AI structuring started",
-            model=decision.model,
-            free_ram_gb=decision.free_ram_gb,
-            model_reason=decision.reason,
-            raw_chars=len(raw_text),
-        )
+    await _event("extract", "Extracting raw text faithfully (column-aware + OCR)")
+    extraction = await asyncio.to_thread(extract_raw_text, pdf_path, extract_log)
+    raw_text = extraction["raw_text"]
+    await _event(
+        "extract",
+        "Raw text extracted",
+        chars=len(raw_text),
+        page_count=extraction["page_count"],
+    )
 
-        structured = await asyncio.to_thread(build_outputs, raw_text, ai_log)
-        chunks_processed = structured.data.get("metadata", {}).get("chunks_processed", 1)
-        await _event(
-            "ai",
-            "AI structuring completed",
-            document_id=structured.data.get("document_id"),
-            title=structured.data.get("title"),
-            ai_mode=structured.data.get("metadata", {}).get("ai_mode"),
-            model=structured.data.get("metadata", {}).get("model"),
-            chunks_processed=chunks_processed,
-            ai_preview=structured.html_text[:1500],
-        )
+    # ── Regex-based metadata (NO AI) ────────────────────────────
+    metadata = extract_metadata(raw_text)
 
-        # ── Save outputs ─────────────────────────────────────────
-        doc_id = structured.data.get("document_id") or filename
-        paths = output_paths(doc_id)
-        write_text(paths["xml"], structured.xml_text)
-        write_text(paths["html"], structured.html_text)
-        await _event(
-            "save",
-            "XML/HTML saved",
-            xml=paths["xml"],
-            html=paths["html"],
-            html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
-            xml_url=f"/outputs/xml/{os.path.basename(paths['xml'])}",
-        )
+    # Build doc_id from metadata, fall back to filename.
+    teychos = metadata.get("teychos")
+    arithmos = metadata.get("arithmos_fyllou")
+    hmerominia = metadata.get("hmerominia")
+    year = hmerominia.split("-")[0] if hmerominia else None
+    if teychos and arithmos and year:
+        doc_id = f"ΦΕΚ {teychos} {arithmos}-{year}"
+    else:
+        doc_id = os.path.splitext(filename)[0]
+    title = metadata.get("titlos") or doc_id
 
-        # ── Apply amendments ─────────────────────────────────────
-        amendment_notes: List[str] = []
-        for amend in structured.data.get("amendments", []):
-            law_id = amend.get("target_law_id")
-            if not law_id:
-                continue
+    # ── Build light archival XML + HTML ─────────────────────────
+    xml_text = build_archive_xml(metadata, raw_text)
+    html_text = build_archive_html(metadata, raw_text)
 
-            current = get_current_law_text(law_id)
-            result = apply_amendments(current, [amend])
-            amendment_notes.extend(result.notes)
-            await _log(
-                "info",
-                "amend",
-                f"target={law_id} changed={result.changed} notes={len(result.notes)}",
-            )
+    # ── Save outputs ────────────────────────────────────────────
+    paths = output_paths(doc_id)
+    write_text(paths["xml"], xml_text)
+    write_text(paths["html"], html_text)
+    await _event(
+        "save",
+        "XML/HTML saved",
+        xml=paths["xml"],
+        html=paths["html"],
+        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
+        xml_url=f"/outputs/xml/{os.path.basename(paths['xml'])}",
+    )
 
-            if result.changed:
-                amend["diff"] = result.diff  # Store diff in the amendment object
-                current_path, version_path = snapshot_and_update(
-                    law_id=law_id,
-                    new_text=result.new_law_text,
-                    effective_date=structured.data.get("publication_date"),
-                    diff=result.diff
-                )
-                await _event(
-                    "amend",
-                    f"Applied amendment to {law_id}",
-                    current=current_path,
-                    version=version_path,
-                )
-
-        # ── Review queue ─────────────────────────────────────────
-        if structured.needs_review or amendment_notes:
-            review_path = enqueue_review(
-                {
-                    "document_id": doc_id,
-                    "title": structured.data.get("title"),
-                    "questions": structured.review_questions + amendment_notes,
-                    "raw_excerpt": raw_text[:3000],
-                    "metadata": structured.data.get("metadata", {}),
-                }
-            )
-            await _event(
-                "review",
-                "Queued for human review",
-                review_file=review_path,
-                question_count=len(structured.review_questions) + len(amendment_notes),
-            )
-
-        await _event(
-            "done",
-            f"Finished {filename}",
-            document_id=doc_id,
-            html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
-        )
-        return {
-            "document_id": doc_id,
-            "title": structured.data.get("title"),
-            "xml": paths["xml"],
-            "html": paths["html"],
-            "html_url": f"/outputs/html/{os.path.basename(paths['html'])}",
-            "xml_url": f"/outputs/xml/{os.path.basename(paths['xml'])}",
-            "needs_review": structured.needs_review or bool(amendment_notes),
-        }
-    finally:
-        try:
-            stopped = await asyncio.to_thread(stop_active_models, ai_log)
-            if stopped:
-                await _event(
-                    "ai_purge",
-                    "Cleared Ollama model sessions after PDF",
-                    stopped_models=stopped,
-                )
-        except Exception as exc:
-            await _log("warning", "ai_purge", f"failed to clear AI state: {exc}")
+    await _event(
+        "done",
+        f"Finished {filename}",
+        document_id=doc_id,
+        html_url=f"/outputs/html/{os.path.basename(paths['html'])}",
+    )
+    return {
+        "document_id": doc_id,
+        "title": title,
+        "xml": paths["xml"],
+        "html": paths["html"],
+        "html_url": f"/outputs/html/{os.path.basename(paths['html'])}",
+        "xml_url": f"/outputs/xml/{os.path.basename(paths['xml'])}",
+        "needs_review": False,
+    }
 
 
 @app.post("/process")
