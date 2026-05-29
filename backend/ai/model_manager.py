@@ -1,12 +1,13 @@
 """Model manager for local Ollama models with dynamic fallback based on free RAM."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Dict, Optional, Callable
+import os
 import subprocess
 import time
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
-import os
 
 import ollama
 import psutil
@@ -43,11 +44,16 @@ class ModelDecision:
     reason: str
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
 def get_free_ram_gb() -> float:
-    return psutil.virtual_memory().available / (1024 ** 3)
+    return psutil.virtual_memory().available / (1024**3)
 
 
-def _emit(log_hook: Optional[Callable[[str, str], None]], source: str, message: str) -> None:
+def _emit(
+    log_hook: Optional[Callable[[str, str], None]], source: str, message: str
+) -> None:
     if log_hook:
         try:
             log_hook(source, message)
@@ -55,24 +61,53 @@ def _emit(log_hook: Optional[Callable[[str, str], None]], source: str, message: 
             pass
 
 
-def _list_available_models(client: ollama.Client) -> List[str]:
-    response = client.list()
+def _coerce_list(obj) -> list:
+    """Return obj as a plain list regardless of whether it is a dict, list, or Pydantic model."""
+    if obj is None:
+        return []
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        return obj.get("models", [])
+    # Pydantic / dataclass object (ollama >= 0.2)
+    return list(getattr(obj, "models", None) or [])
+
+
+def _model_name(item) -> Optional[str]:
+    """Extract model name from a list-response item (dict or object)."""
+    if isinstance(item, dict):
+        return item.get("model") or item.get("name")
+    return getattr(item, "model", None) or getattr(item, "name", None)
+
+
+def _response_content(response) -> str:
+    """
+    Extract the assistant message content from an ollama chat response.
+
+    ollama < 0.2  → dict:   response["message"]["content"]
+    ollama >= 0.2 → object: response.message.content
+    """
     if isinstance(response, dict):
-        models = response.get("models", [])
-    else:
-        models = getattr(response, "models", []) or []
-    names = []
-    for item in models:
-        if isinstance(item, dict):
-            name = item.get("model") or item.get("name")
-        else:
-            name = getattr(item, "model", None) or getattr(item, "name", None)
-        if name:
-            names.append(name)
-    return names
+        msg = response.get("message", {})
+        if isinstance(msg, dict):
+            return msg.get("content", "{}")
+        return getattr(msg, "content", "{}")
+
+    # Pydantic ChatResponse
+    msg = getattr(response, "message", None)
+    if msg is None:
+        return "{}"
+    if isinstance(msg, dict):
+        return msg.get("content", "{}")
+    return getattr(msg, "content", "{}")
 
 
-def _start_ollama_server_if_needed(log_hook: Optional[Callable[[str, str], None]] = None) -> None:
+# ── Ollama server management ─────────────────────────────────────────────────
+
+
+def _start_ollama_server_if_needed(
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> None:
     if not OLLAMA_AUTO_START:
         return
 
@@ -86,12 +121,9 @@ def _start_ollama_server_if_needed(log_hook: Optional[Callable[[str, str], None]
         _emit(log_hook, "ollama", f"server reachable at {OLLAMA_BASE_URL}")
         return
     except Exception:
-        _emit(log_hook, "ollama", f"server not reachable at {OLLAMA_BASE_URL}, attempting auto-start")
+        _emit(log_hook, "ollama", f"server not reachable – attempting auto-start")
 
-    env = dict()
-    # inherit caller env safely
-    import os
-    env.update(os.environ)
+    env = dict(os.environ)
     env.setdefault("OLLAMA_HOST", f"http://{host}:{port}")
 
     subprocess.Popen(
@@ -104,7 +136,7 @@ def _start_ollama_server_if_needed(log_hook: Optional[Callable[[str, str], None]
     _emit(log_hook, "ollama", "auto-start command executed: ollama serve")
 
     deadline = time.time() + 20
-    last_err = None
+    last_err: Optional[Exception] = None
     while time.time() < deadline:
         try:
             probe = ollama.Client(host=OLLAMA_BASE_URL, timeout=2)
@@ -115,33 +147,47 @@ def _start_ollama_server_if_needed(log_hook: Optional[Callable[[str, str], None]
             last_err = exc
             time.sleep(0.5)
 
-    raise RuntimeError(f"Failed to auto-start Ollama server at {OLLAMA_BASE_URL}: {last_err}")
+    raise RuntimeError(
+        f"Failed to auto-start Ollama server at {OLLAMA_BASE_URL}: {last_err}"
+    )
 
 
-def _ensure_local_model(client: ollama.Client, log_hook: Optional[Callable[[str, str], None]] = None) -> None:
+def _list_available_models(client: ollama.Client) -> List[str]:
+    response = client.list()
+    items = _coerce_list(response)
+    return [n for n in (_model_name(i) for i in items) if n]
+
+
+def _ensure_local_model(
+    client: ollama.Client,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> None:
     if not OLLAMA_AUTO_PULL:
         return
 
     available = _list_available_models(client)
-    _emit(log_hook, "ollama", f"local models detected: {', '.join(available) if available else '[none]'}")
+    _emit(
+        log_hook,
+        "ollama",
+        f"local models: {', '.join(available) if available else '[none]'}",
+    )
     if available:
         return
 
     preferred = [cfg["name"] for cfg in OLLAMA_MODELS]
-    pull_errors = []
-    pull_no_effect = []
+    pull_errors: List[str] = []
+
+    parsed = urlparse(OLLAMA_BASE_URL)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 11434
+    env = dict(os.environ)
+    env["OLLAMA_HOST"] = f"http://{host}:{port}"
+
     for model_name in preferred:
         try:
-            _emit(log_hook, "ollama", f"auto-pull starting model={model_name}")
-            # Use CLI pull as a blocking, reliable path across ollama-python versions.
-            cmd = ["ollama", "pull", model_name]
-            env = dict(os.environ)
-            parsed = urlparse(OLLAMA_BASE_URL)
-            host = parsed.hostname or "127.0.0.1"
-            port = parsed.port or 11434
-            env["OLLAMA_HOST"] = f"http://{host}:{port}"
+            _emit(log_hook, "ollama", f"auto-pull starting: {model_name}")
             proc = subprocess.run(
-                cmd,
+                ["ollama", "pull", model_name],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -149,60 +195,56 @@ def _ensure_local_model(client: ollama.Client, log_hook: Optional[Callable[[str,
             )
             if proc.returncode != 0:
                 raise RuntimeError(
-                    f"pull command failed rc={proc.returncode} stderr={proc.stderr.strip()[:300]}"
+                    f"pull rc={proc.returncode} stderr={proc.stderr.strip()[:300]}"
                 )
-            _emit(log_hook, "ollama", f"auto-pull completed model={model_name}")
-            # refresh after pull attempt
+            _emit(log_hook, "ollama", f"auto-pull completed: {model_name}")
             refreshed = _list_available_models(client)
-            _emit(
-                log_hook,
-                "ollama",
-                f"local models after pull: {', '.join(refreshed) if refreshed else '[none]'}",
-            )
             if refreshed:
-                _emit(log_hook, "ollama", "at least one local model is now available")
+                _emit(log_hook, "ollama", "at least one model is now available")
                 return
-            pull_no_effect.append(model_name)
         except Exception as exc:
-            _emit(log_hook, "ollama", f"auto-pull failed model={model_name} error={exc}")
+            _emit(log_hook, "ollama", f"auto-pull failed: {model_name} – {exc}")
             pull_errors.append(f"{model_name}: {exc}")
 
-    details = []
-    if pull_errors:
-        details.append("errors=" + " | ".join(pull_errors))
-    if pull_no_effect:
-        details.append("no_effect_models=" + ", ".join(pull_no_effect))
-    detail_suffix = (" (" + "; ".join(details) + ")") if details else ""
     raise RuntimeError(
-        "No local Ollama models and auto-pull failed" + detail_suffix
+        "No local Ollama models and auto-pull failed: " + " | ".join(pull_errors)
     )
 
 
+# ── Model selection ──────────────────────────────────────────────────────────
+
+
 def _candidate_models(client: ollama.Client) -> List[str]:
+    """Return available models sorted by preference (RAM-aware)."""
     free_ram = get_free_ram_gb()
     available = _list_available_models(client)
     available_set = set(available)
 
-    preferred = []
+    # 1. Models that fit preferred list AND RAM requirement
+    fits: List[str] = []
     for cfg in OLLAMA_MODELS:
         name = cfg["name"]
-        min_ram = float(cfg["min_free_ram_gb"])
-        if name in available_set and free_ram >= min_ram:
-            preferred.append(name)
+        if name in available_set and free_ram >= float(cfg["min_free_ram_gb"]):
+            fits.append(name)
 
+    # 2. Preferred models that don't meet RAM (still usable as fallback)
     for cfg in OLLAMA_MODELS:
         name = cfg["name"]
-        if name in available_set and name not in preferred:
-            preferred.append(name)
+        if name in available_set and name not in fits:
+            fits.append(name)
 
+    # 3. Any remaining local models
     for name in available:
-        if name not in preferred:
-            preferred.append(name)
+        if name not in fits:
+            fits.append(name)
 
-    return preferred
+    return fits
 
 
-def choose_model(client: Optional[ollama.Client] = None, log_hook: Optional[Callable[[str, str], None]] = None) -> ModelDecision:
+def choose_model(
+    client: Optional[ollama.Client] = None,
+    log_hook: Optional[Callable[[str, str], None]] = None,
+) -> ModelDecision:
     _start_ollama_server_if_needed(log_hook=log_hook)
     client = client or ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
     _ensure_local_model(client, log_hook=log_hook)
@@ -225,12 +267,15 @@ def choose_model(client: Optional[ollama.Client] = None, log_hook: Optional[Call
         model=selected,
         free_ram_gb=round(free_ram, 2),
         downgraded=downgraded,
-        reason=f"selected {selected} from local candidates: {', '.join(candidates)}",
+        reason=f"selected {selected} from {', '.join(candidates)}",
     )
 
 
 def should_pause_for_memory() -> bool:
     return get_free_ram_gb() < RAM_DANGER_GB
+
+
+# ── Main chat entry point ────────────────────────────────────────────────────
 
 
 def chat_json(
@@ -239,6 +284,13 @@ def chat_json(
     temperature: float = 0.0,
     log_hook: Optional[Callable[[str, str], None]] = None,
 ) -> Dict:
+    """
+    Run a chat completion against the best available local model and return
+    a dict with keys: model, free_ram_gb, downgraded, reason, raw (str).
+
+    Tries two profiles per model (default → cpu_safe) and iterates over all
+    candidate models before giving up.
+    """
     _start_ollama_server_if_needed(log_hook=log_hook)
     client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
     _ensure_local_model(client, log_hook=log_hook)
@@ -250,6 +302,7 @@ def chat_json(
         raise RuntimeError("No local Ollama models available after auto-setup.")
 
     errors: List[str] = []
+
     for model_name in candidates:
         profiles = [
             (
@@ -264,17 +317,20 @@ def chat_json(
                 "cpu_safe",
                 {
                     "temperature": 0,
-                    "num_ctx": min(1024, OLLAMA_NUM_CTX),
-                    "num_predict": min(350, OLLAMA_MAX_OUTPUT_TOKENS),
+                    "num_ctx": min(2048, OLLAMA_NUM_CTX),
+                    "num_predict": min(1024, OLLAMA_MAX_OUTPUT_TOKENS),
                     "num_gpu": 0,
                 },
             ),
         ]
 
-        last_exc = None
         for profile_name, opts in profiles:
             try:
-                _emit(log_hook, "ai", f"chat attempt model={model_name} profile={profile_name} opts={opts}")
+                _emit(
+                    log_hook,
+                    "ai",
+                    f"chat attempt model={model_name} profile={profile_name}",
+                )
                 response = client.chat(
                     model=model_name,
                     format="json",
@@ -284,17 +340,21 @@ def chat_json(
                         {"role": "user", "content": prompt},
                     ],
                 )
-                content = response.get("message", {}).get("content", "{}")
+                content = _response_content(response)
                 return {
                     "model": model_name,
                     "free_ram_gb": free_ram,
                     "downgraded": model_name != candidates[0],
-                    "reason": f"used {model_name}({profile_name}); candidates were: {', '.join(candidates)}",
+                    "reason": f"used {model_name}({profile_name})",
                     "raw": content,
                 }
             except Exception as exc:
-                last_exc = exc
-                _emit(log_hook, "ai", f"chat failed model={model_name} profile={profile_name} error={exc}")
-        errors.append(f"{model_name}: {last_exc}")
+                _emit(
+                    log_hook,
+                    "ai",
+                    f"chat failed model={model_name} profile={profile_name} error={exc}",
+                )
+
+        errors.append(f"{model_name}: last error logged above")
 
     raise RuntimeError("All candidate models failed: " + " | ".join(errors))
