@@ -19,51 +19,56 @@ from .model_manager import chat_json
 #   - Return incomplete JSON when output token limit is hit
 # The one-shot example and explicit aliases address all three.
 
-SYSTEM_PROMPT = """You are a Greek legal document parser. Extract structured data from ΦΕΚ (Greek Government Gazette) OCR text.
+SYSTEM_PROMPT = """You are a specialized Greek legal document parser for ΦΕΚ (Greek Government Gazette).
+Your goal is to transform OCR text into a high-fidelity structured JSON representation without losing ANY content.
 
-Output ONLY a single valid JSON object. No markdown. No code fences. No explanation. No text before or after the JSON.
-
-REQUIRED OUTPUT SCHEMA (use these EXACT field names, all snake_case):
+REQUIRED OUTPUT SCHEMA:
 {
-  "document_type": "fek",
-  "title": "full descriptive title",
-  "document_id": "ΦΕΚ Α' 1/2026 or law number",
+  "document_type": "fek|law|presidential_decree|cabinet_act|ministerial_decision",
+  "document_id": "ΦΕΚ Α' 1/2026",
   "publication_date": "YYYY-MM-DD",
-  "sections": [
-    {"kind": "heading", "text": "ΑΡΘΡΟ 1"},
-    {"kind": "paragraph", "text": "body text"},
-    {"kind": "note", "text": "footnote or annotation"},
-    {"kind": "citation", "text": "reference to another law"}
+  "act_number": "39",
+  "act_year": "2025",
+  "title": "Full descriptive title of the act",
+  "preamble": [
+    {"point": "1", "sub_points": ["α", "β"], "text": "..."}
   ],
-  "signatures": ["ΥΠΟΥΡΓΟΣ name"],
-  "metadata": {"source_hint": "series/issue info", "confidence": 0.85},
+  "body": [
+    {
+      "kind": "article",
+      "number": "1",
+      "title": "Title of article",
+      "content": "Full text of article"
+    },
+    {
+      "kind": "decision_block",
+      "text": "Full text of decision"
+    }
+  ],
+  "signatures": [
+    {"title": "Ο Πρωθυπουργός", "name": "ΚΥΡΙΑΚΟΣ ΜΗΤΣΟΤΑΚΗΣ"},
+    {"title": "Ο Υπουργός...", "name": "..."}
+  ],
   "amendments": [
     {
       "target_law_id": "ν. 4622/2019",
-      "operation": "replace",
+      "operation": "replace|insert|delete",
       "article": "άρθρο 46 παρ. 6",
-      "old_text": "text being replaced",
-      "new_text": "replacement text",
-      "confidence": 0.9,
-      "question_for_human": ""
+      "old_text": "...",
+      "new_text": "..."
     }
-  ]
+  ],
+  "metadata": {"confidence": 0.95}
 }
 
-RULES:
-- document_type: use "fek" for gazette issues, "law" for standalone laws, "presidential_decree" for Προεδρικά Διατάγματα, "cabinet_act" for Πράξεις Υπουργικού Συμβουλίου.
-- title: Extract the FULL, LONG descriptive title from the first page. E.g. 'Στελέχωση του Ιδιαίτερου Γραφείου...'.
-- document_id: "ΦΕΚ Α' 1/2026" or similar. Look for 'Αρ. Φύλλου' and 'Τεύχος'.
-- publication_date: YYYY-MM-DD format only, null if not found.
-- sections: This is the MOST IMPORTANT field. It must contain the ENTIRE BODY of the document. You MUST EXTRACT EVERY SINGLE SENTENCE and WORD. DO NOT SUMMARIZE. DO NOT OMIT ANYTHING.
-- Every single line of text from the source MUST be represented in the "sections" array.
-- For each paragraph, list item, or block of text, create a {"kind": "paragraph", "text": "..."} entry.
-- Use "heading" for: Article titles (e.g. 'ΑΡΘΡΟ 1'), Major headings (e.g. 'ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ', 'Αποφασίζει:', 'Πράξη 39').
-- Use "paragraph" for everything else. If you are unsure, use "paragraph".
-- signatures: Extract all names and titles of the signers at the end of the document.
-- amendments: only include if the document explicitly modifies another law; empty array [] otherwise.
-- confidence: float 0.0-1.0; use <0.75 for uncertain items and set question_for_human.
-- All field names MUST be snake_case exactly as shown above""".strip()
+STRICT RULES:
+1. CONTENT FIDELITY: You must capture EVERY WORD from the source. Do not summarize preamble points (1, 2, 3...) or alphabetical sub-points (α, β, γ...).
+2. PREAMBLE: Greek ΦΕΚ documents start with 'Έχοντας υπόψη:' followed by numbered points. Extract these EXHAUSTIVELY into the 'preamble' array.
+3. BODY: For documents with articles, use kind='article'. For Cabinet Acts (Πράξεις Υπουργικού Συμβουλίου) which use 'αποφασίζει:', use kind='decision_block' to capture the decision text.
+4. SIGNATURES: Find the list of signers at the end (e.g., 'Ο Πρωθυπουργός', 'Τα Μέλη...'). Extract both title and name.
+5. TITLES: Act titles are usually between the 'ΠΡΑΞΕΙΣ ΥΠΟΥΡΓΙΚΟΥ ΣΥΜΒΟΥΛΙΟΥ' header and the preamble.
+6. NO MARKDOWN: Output ONLY valid JSON.
+""".strip()
 
 # Minimal retry prompt - used when first attempt fails JSON parsing
 RETRY_PROMPT = """Output ONLY valid JSON. No other text.
@@ -104,18 +109,8 @@ _FIELD_ALIASES: Dict[str, str] = {
     "issueNumber": "document_id",
     "type": "document_type",
     "kind": "document_type",
-    "author": "_author_hint",  # not in schema, capture for title fallback
-    "issuer": "_author_hint",
-}
-
-_SECTION_KIND_ALIASES: Dict[str, str] = {
-    "header": "heading",
-    "title": "heading",
-    "body": "paragraph",
-    "text": "paragraph",
-    "footnote": "note",
-    "ref": "citation",
-    "reference": "citation",
+    "actNumber": "act_number",
+    "actYear": "act_year",
 }
 
 
@@ -126,12 +121,23 @@ def _normalise_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         canonical = _FIELD_ALIASES.get(k, k)
         out[canonical] = v
 
-    # Ensure sections have valid 'kind' values
-    for sec in out.get("sections", []):
-        if isinstance(sec, dict):
-            sec["kind"] = _SECTION_KIND_ALIASES.get(
-                sec.get("kind", "paragraph"), sec.get("kind", "paragraph")
-            )
+    # Handle migration from old 'sections' to new 'body' if model uses old schema
+    if "sections" in out and "body" not in out:
+        out["body"] = []
+        for sec in out["sections"]:
+            if not isinstance(sec, dict): continue
+            kind = sec.get("kind", "paragraph")
+            text = sec.get("text", "")
+            if kind == "heading" and "ΑΡΘΡΟ" in text.upper():
+                # Try to extract article number
+                m = re.search(r"ΑΡΘΡΟ\s+(\d+)", text, re.I)
+                num = m.group(1) if m else "1"
+                out["body"].append({"kind": "article", "number": num, "content": ""})
+            elif out["body"] and out["body"][-1]["kind"] == "article" and not out["body"][-1].get("content"):
+                out["body"][-1]["content"] = text
+            else:
+                out["body"].append({"kind": "decision_block", "text": text})
+
     return out
 
 
@@ -242,7 +248,8 @@ _REQUIRED_KEYS = [
     "document_type",
     "title",
     "document_id",
-    "sections",
+    "preamble",
+    "body",
     "metadata",
     "amendments",
 ]
@@ -261,7 +268,8 @@ def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
         "title": data.get("_author_hint", "Untitled"),
         "document_id": "unknown",
         "publication_date": None,
-        "sections": [],
+        "preamble": [],
+        "body": [],
         "signatures": [],
         "metadata": {"confidence": 0.5},
         "amendments": [],
@@ -280,7 +288,7 @@ def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # 1 token ≈ 3.5 chars for Greek text → ~9800 chars per chunk.
 # We use 4000 to ensure the structured JSON output (which is larger than raw text)
 # fits within the model's output token limit (OLLAMA_MAX_OUTPUT_TOKENS).
-_MAX_CHARS_PER_CHUNK = 4000
+_MAX_CHARS_PER_CHUNK = 5000
 
 
 def _split_into_chunks(text: str) -> List[str]:
@@ -328,8 +336,9 @@ def _merge_chunk_data(chunks_data: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     merged = dict(chunks_data[0])
     for subsequent in chunks_data[1:]:
-        # Extend sections and amendments from subsequent chunks
-        merged["sections"] = merged.get("sections", []) + subsequent.get("sections", [])
+        # Extend preamble, body and amendments from subsequent chunks
+        merged["preamble"] = merged.get("preamble", []) + subsequent.get("preamble", [])
+        merged["body"] = merged.get("body", []) + subsequent.get("body", [])
         merged["amendments"] = merged.get("amendments", []) + subsequent.get(
             "amendments", []
         )
@@ -458,21 +467,42 @@ def structure_raw_text(
 def to_xml(data: Dict[str, Any]) -> str:
     root = ET.Element("document")
 
-    for key in ["document_type", "title", "document_id", "publication_date"]:
+    for key in ["document_type", "title", "document_id", "publication_date", "act_number", "act_year"]:
         elem = ET.SubElement(root, key)
         elem.text = str(data.get(key) or "")
 
-    sections_el = ET.SubElement(root, "sections")
-    for sec in data.get("sections", []):
-        sec_el = ET.SubElement(
-            sections_el, "section", kind=sec.get("kind", "paragraph")
-        )
-        sec_el.text = sec.get("text", "")
+    preamble_el = ET.SubElement(root, "preamble")
+    for p in data.get("preamble", []):
+        p_el = ET.SubElement(preamble_el, "point", number=str(p.get("point", "")))
+        p_el.text = p.get("text", "")
+        if p.get("sub_points"):
+            sps_el = ET.SubElement(p_el, "sub_points")
+            for sp in p["sub_points"]:
+                sp_el = ET.SubElement(sps_el, "sub_point")
+                sp_el.text = str(sp)
+
+    body_el = ET.SubElement(root, "body")
+    for item in data.get("body", []):
+        kind = item.get("kind", "unknown")
+        item_el = ET.SubElement(body_el, "item", kind=kind)
+        if kind == "article":
+            num_el = ET.SubElement(item_el, "number")
+            num_el.text = str(item.get("number", ""))
+            title_el = ET.SubElement(item_el, "title")
+            title_el.text = str(item.get("title", ""))
+            cont_el = ET.SubElement(item_el, "content")
+            cont_el.text = str(item.get("content", ""))
+        else:
+            txt_el = ET.SubElement(item_el, "text")
+            txt_el.text = str(item.get("text", ""))
 
     sigs_el = ET.SubElement(root, "signatures")
     for s in data.get("signatures", []):
         sig = ET.SubElement(sigs_el, "signature")
-        sig.text = s
+        title_el = ET.SubElement(sig, "title")
+        title_el.text = str(s.get("title", ""))
+        name_el = ET.SubElement(sig, "name")
+        name_el.text = str(s.get("name", ""))
 
     meta_el = ET.SubElement(root, "metadata")
     for k, v in data.get("metadata", {}).items():
@@ -496,38 +526,54 @@ def to_xml(data: Dict[str, Any]) -> str:
 
 def to_html(data: Dict[str, Any]) -> str:
     lines = ["<!doctype html>", "<html><head><meta charset='utf-8'>"]
-    lines.append("<style>.diff-added { color: #00703c; background-color: #d7f1e6; } .diff-removed { color: #d4351c; background-color: #f9d6d2; } .fek-diff { font-family: monospace; white-space: pre-wrap; background-color: #f3f2f1; padding: 10px; border: 1px solid #b1b4b6; }</style>")
-    lines.append("</head><body style='font-family: sans-serif;'>")
-    lines.append(f"<h1>{_esc(data.get('title', 'Untitled'))}</h1>")
-    lines.append(f"<p><strong>ID:</strong> {_esc(data.get('document_id', ''))}</p>")
-    lines.append(
-        f"<p><strong>Type:</strong> {_esc(data.get('document_type', 'unknown'))}</p>"
-    )
-    if data.get("publication_date"):
-        lines.append(f"<p><strong>Date:</strong> {_esc(data['publication_date'])}</p>")
+    lines.append("<style>.diff-added { color: #00703c; background-color: #d7f1e6; } .diff-removed { color: #d4351c; background-color: #f9d6d2; } .fek-diff { font-family: monospace; white-space: pre-wrap; background-color: #f3f2f1; padding: 10px; border: 1px solid #b1b4b6; } .preamble-point { margin-left: 20px; } .sub-point { margin-left: 40px; font-style: italic; }</style>")
+    lines.append("</head><body style='font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 40px;'>")
 
-    for sec in data.get("sections", []):
-        kind = sec.get("kind", "paragraph")
-        txt = _esc(sec.get("text", ""))
-        if kind == "heading":
-            lines.append(f"<h2>{txt}</h2>")
-        elif kind == "note":
-            lines.append(f"<blockquote>{txt}</blockquote>")
-        elif kind == "citation":
-            lines.append(f"<cite>{txt}</cite>")
-        else:
-            lines.append(f"<p>{txt}</p>")
+    # Header info
+    lines.append(f"<p style='text-align: center; color: #666;'>{_esc(data.get('document_id', ''))} | {_esc(data.get('publication_date', ''))}</p>")
+    lines.append(f"<h1 style='text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px;'>{_esc(data.get('title', 'Untitled'))}</h1>")
 
+    # Preamble
+    if data.get("preamble"):
+        lines.append("<h2>Έχοντας υπόψη:</h2>")
+        for p in data["preamble"]:
+            text = _esc(p.get("text", ""))
+            point = _esc(p.get("point", ""))
+            lines.append(f"<div class='preamble-point'><p><strong>{point}.</strong> {text}</p></div>")
+            if p.get("sub_points"):
+                for sp in p["sub_points"]:
+                    lines.append(f"<div class='sub-point'><p>{_esc(sp)}</p></div>")
+
+    # Body
+    if data.get("body"):
+        for item in data["body"]:
+            if item.get("kind") == "article":
+                lines.append(f"<div style='margin-top: 30px;'>")
+                lines.append(f"<h3 style='text-align: center;'>ΑΡΘΡΟ {_esc(item.get('number', ''))}</h3>")
+                if item.get("title"):
+                    lines.append(f"<h4 style='text-align: center;'>{_esc(item.get('title'))}</h4>")
+                lines.append(f"<p>{_esc(item.get('content', ''))}</p>")
+                lines.append(f"</div>")
+            elif item.get("kind") == "decision_block":
+                lines.append(f"<div style='margin-top: 30px; border-top: 1px solid #ccc; padding-top: 10px;'>")
+                lines.append(f"<h3 style='text-align: center;'>ΑΠΟΦΑΣΙΖΕΙ</h3>")
+                lines.append(f"<p>{_esc(item.get('text', ''))}</p>")
+                lines.append(f"</div>")
+
+    # Signatures
     if data.get("signatures"):
-        lines.append("<h3>Signatures</h3>")
+        lines.append("<div style='margin-top: 50px; display: flex; flex-wrap: wrap; justify-content: space-around;'>")
         for s in data["signatures"]:
-            lines.append(f"<p>{_esc(s)}</p>")
+            title = _esc(s.get("title", ""))
+            name = _esc(s.get("name", ""))
+            lines.append(f"<div style='text-align: center; margin: 20px;'><strong>{title}</strong><br>{name}</div>")
+        lines.append("</div>")
 
     if data.get("amendments"):
-        lines.append("<h2>Amendments (Diff View)</h2>")
+        lines.append("<h2 style='margin-top: 60px; border-top: 2px dashed #005ea5; padding-top: 20px;'>Τροποποιήσεις (Diff View)</h2>")
         for amend in data["amendments"]:
             if amend.get("diff"):
-                lines.append(f"<h3>Change to {amend.get('target_law_id')}</h3>")
+                lines.append(f"<h3>Αλλαγή στο {amend.get('target_law_id')}</h3>")
                 lines.append("<div class='fek-diff'>")
                 for line in amend["diff"].splitlines():
                     cls = ""
@@ -557,11 +603,16 @@ def build_outputs(
     raw_text: str,
     log_hook: Optional[Callable[[str, str], None]] = None,
 ) -> StructuredOutput:
-    data = structure_raw_text(raw_text, log_hook=log_hook)
+    # Check if raw_text is small enough for single chunk
+    if len(raw_text) < 10000:
+         if log_hook: log_hook("ai", "document small, using single chunk for maximum context")
+         data = _structure_chunk(raw_text, 0, 1, log_hook=log_hook)
+    else:
+         data = structure_raw_text(raw_text, log_hook=log_hook)
 
     review_questions: List[str] = []
     for amend in data.get("amendments", []):
-        if (amend.get("confidence") or 0) < 0.75 and amend.get("question_for_human"):
+        if (amend.get("confidence", 0) or 0) < 0.75 and amend.get("question_for_human"):
             review_questions.append(amend["question_for_human"])
 
     if data.get("metadata", {}).get("parse_error"):
