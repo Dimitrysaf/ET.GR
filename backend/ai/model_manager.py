@@ -286,7 +286,7 @@ def classify_image(
     # Prefer a multimodal model if available, otherwise use default
     _start_ollama_server_if_needed(log_hook=log_hook)
     client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
-
+    
     available = _list_available_models(client)
     # Heuristic: look for 'llava' or 'bakllava' or 'moondream'
     model = "llava"

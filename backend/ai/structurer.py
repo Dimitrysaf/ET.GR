@@ -61,10 +61,6 @@ REQUIRED OUTPUT SCHEMA:
   "metadata": {"confidence": 0.95}
 }
 
-ONE-SHOT EXAMPLE (Partial):
-OCR: "Πράξη 39... Στελέχωση... ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ Έχοντας υπόψη: 1. Tις διατάξεις: α) Των παρ. 1... αποφασίζει: Αυξάνονται... Ο Πρωθυπουργός ΚΥΡΙΑΚΟΣ ΜΗΤΣΟΤΑΚΗΣ"
-JSON: {"document_type": "cabinet_act", "title": "Στελέχωση...", "preamble": [{"point": "1", "sub_points": ["α"], "text": "Τις διατάξεις..."}], "body": [{"kind": "decision_block", "text": "Αυξάνονται..."}], "signatures": [{"title": "Ο Πρωθυπουργός", "name": "ΚΥΡΙΑΚΟΣ ΜΗΤΣΟΤΑΚΗΣ"}]}
-
 STRICT RULES:
 1. CONTENT FIDELITY: You must capture EVERY WORD from the source. DO NOT OMIT preamble points (1, 2, 3...) or sub-points (α, β, γ...).
 2. PREAMBLE: Greek ΦΕΚ documents start with 'Έχοντας υπόψη:' followed by numbered points. Extract these EXHAUSTIVELY into the 'preamble' array.
@@ -72,7 +68,21 @@ STRICT RULES:
 4. SIGNATURES: Find the list of signers at the end (e.g., 'Ο Πρωθυπουργός', 'Τα Μέλη...'). Extract both title and name.
 5. TITLES: Act titles are usually between the 'ΠΡΑΞΕΙΣ ΥΠΟΥΡΓΙΚΟΥ ΣΥΜΒΟΥΛΙΟΥ' header and the preamble.
 6. NO MARKDOWN: Output ONLY valid JSON. No code fences.
-""".strip()
+
+ADDITIONAL RULES:
+- document_type: use "fek" for gazette issues, "law" for standalone laws, "presidential_decree" for Προεδρικά Διατάγματα, "cabinet_act" for Πράξεις Υπουργικού Συμβουλίου.
+- title: Extract the FULL, LONG descriptive title from the first page. E.g. 'Στελέχωση του Ιδιαίτερου Γραφείου...'.
+- document_id: "ΦΕΚ Α' 1/2026" or similar. Look for 'Αρ. Φύλλου' and 'Τεύχος'.
+- publication_date: YYYY-MM-DD format only, null if not found.
+- body: This is the MOST IMPORTANT field. It must contain the ENTIRE BODY of the document. You MUST EXTRACT EVERY SINGLE SENTENCE and WORD. DO NOT SUMMARIZE. DO NOT OMIT ANYTHING.
+- Every single line of text from the source MUST be represented in the body array.
+- For each paragraph, list item, or block of text, create a {"kind": "paragraph", "text": "..."} entry.
+- Use "heading" for: Article titles (e.g. 'ΑΡΘΡΟ 1'), Major headings (e.g. 'ΤΟ ΥΠΟΥΡΓΙΚΟ ΣΥΜΒΟΥΛΙΟ', 'Αποφασίζει:', 'Πράξη 39').
+- Use "paragraph" for everything else. If you are unsure, use "paragraph".
+- signatures: Extract all names and titles of the signers at the end of the document.
+- amendments: only include if the document explicitly modifies another law; empty array [] otherwise.
+- confidence: float 0.0-1.0; use <0.75 for uncertain items and set question_for_human.
+- All field names MUST be snake_case exactly as shown above""".strip()
 
 # Minimal retry prompt - used when first attempt fails JSON parsing
 RETRY_PROMPT = """Output ONLY a JSON object with this structure:
@@ -313,9 +323,8 @@ def _fill_missing_keys(data: Dict[str, Any]) -> Dict[str, Any]:
 # With OLLAMA_NUM_CTX=4096 we have room for ~2800 tokens of user text
 # (system prompt ≈ 350 tokens, JSON schema ≈ 200 tokens, safety margin ≈ 500).
 # 1 token ≈ 3.5 chars for Greek text → ~9800 chars per chunk.
-# We use 4000 to ensure the structured JSON output (which is larger than raw text)
-# fits within the model's output token limit (OLLAMA_MAX_OUTPUT_TOKENS).
-_MAX_CHARS_PER_CHUNK = 5000
+# We use 6000 as a balance between context size and output token limit.
+_MAX_CHARS_PER_CHUNK = 6000
 
 
 def _split_into_chunks(text: str) -> List[str]:

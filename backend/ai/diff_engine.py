@@ -67,9 +67,9 @@ def apply_amendments(current_law_text: str, amendments: List[Dict[str, Any]]) ->
         diff = "".join(diff_lines)
 
     return AmendmentResult(
-        changed=changed,
-        low_confidence=low_confidence,
-        notes=notes,
+        changed=changed, 
+        low_confidence=low_confidence, 
+        notes=notes, 
         new_law_text=text,
         diff=diff
     )
